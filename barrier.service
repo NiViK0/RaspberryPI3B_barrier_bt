@@ -1,0 +1,15 @@
+[Unit]
+Description=Barrier BLE Controller
+After=bluetooth.service network.target
+Requires=bluetooth.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/barrier
+ExecStart=/usr/bin/python3 /opt/barrier/barrier_service.py run
+Restart=always
+RestartSec=3
+User=root
+
+[Install]
+WantedBy=multi-user.target
