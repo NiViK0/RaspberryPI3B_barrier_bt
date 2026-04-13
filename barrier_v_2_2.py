@@ -1,3 +1,112 @@
+# =========================
+#
+# =========================
+# Установка 
+# =========================
+#
+# Скопировать файлы в /opt/barrier:
+#
+# sudo mkdir -p /opt/barrier
+# sudo cp barrier_service.py /opt/barrier/
+# sudo cp panel.py /opt/barrier/
+# sudo chmod +x /opt/barrier/barrier_service.py
+# sudo chmod +x /opt/barrier/panel.py
+#
+# Установить зависимости:
+#
+# sudo apt update
+# sudo apt install -y python3 python3-pip bluetooth bluez
+# pip3 install pyserial flask
+#
+# Проверить, что bluetoothctl работает:
+#
+# bluetoothctl show
+#
+# Создание базы и добавление телефонов
+#
+# Создать базу:
+#
+# python3 /opt/barrier/barrier_service.py init-db
+#
+# Добавить телефон:
+#
+# python3 /opt/barrier/barrier_service.py add AA:BB:CC:DD:EE:FF "Телефон 1"
+#
+# Посмотреть список:
+#
+# python3 /opt/barrier/barrier_service.py list
+
+# Отключить устройство без удаления:
+#
+# python3 /opt/barrier/barrier_service.py disable AA:BB:CC:DD:EE:FF
+#
+# Включить обратно:
+#
+# python3 /opt/barrier/barrier_service.py enable AA:BB:CC:DD:EE:FF
+#
+# Удалить:
+#
+# python3 /opt/barrier/barrier_service.py remove AA:BB:CC:DD:EE:FF
+#
+#Проверка реле
+#
+#До запуска BLE-логики лучше проверить только реле:
+#
+#python3 /opt/barrier/barrier_service.py test-open
+#
+#Если реле не срабатывает, сначала надо проверить:
+#
+#правильный relay_port
+#правильную скорость relay_baudrate
+#правильные команды модуля
+#
+#Сейчас в коде оставлены ваши команды из исходника.
+#
+# Запуск основного сервиса вручную
+#python3 /opt/barrier/barrier_service.py run
+#
+#
+# Автозапуск через systemd
+#
+# Скопировать unit-файлы:
+#
+# sudo cp barrier.service /etc/systemd/system/
+#sudo cp barrier-panel.service /etc/systemd/system/
+#sudo systemctl daemon-reload
+#
+#Включить автозапуск:
+#
+#sudo systemctl enable barrier.service
+#sudo systemctl enable barrier-panel.service
+#
+#Запустить:
+#
+#sudo systemctl start barrier.service
+#sudo systemctl start barrier-panel.service
+#
+#Проверить статус:
+#
+#sudo systemctl status barrier.service
+#sudo systemctl status barrier-panel.service
+#
+#Логи:
+#
+#journalctl -u barrier.service -f
+#journalctl -u barrier-panel.service -f
+#
+#Управление с телефона
+#
+#panel.py поднимает простую web-панель на порту 8080.
+#
+#После запуска открывайте в телефоне:
+#
+#http://IP_ОДНОПЛАТНИКА:8080
+#
+# =========================
+#
+# =========================
+# Установка 
+# =========================
 import argparse
 import logging
 import os
@@ -12,10 +121,6 @@ from enum import Enum, auto
 import serial
 from serial import SerialException
 
-
-# =========================
-# НАСТРОЙКИ
-# =========================
 
 @dataclass(frozen=True)
 class Config:
@@ -60,7 +165,7 @@ def validate_mac(mac: str) -> bool:
 
 
 # =========================
-# SQLITE
+# SQLITE (База данных)
 # =========================
 
 def init_db(db_path: str) -> None:
@@ -114,7 +219,7 @@ def get_enabled_macs(db_path: str) -> list[str]:
 
 
 # =========================
-# BLUETOOTHCTL
+# BLUETOOTHCTL-служба
 # =========================
 
 class BluetoothCtlSession:
@@ -171,10 +276,6 @@ class BluetoothCtlSession:
         self.send("scan on")
 
     def get_devices_output(self) -> str:
-        """
-        Получаем список известных/обнаруженных устройств через отдельный вызов.
-        Это проще и стабильнее, чем пытаться парсить поток stdout живой сессии.
-        """
         result = subprocess.run(
             ["bluetoothctl", "devices"],
             capture_output=True,
@@ -191,7 +292,7 @@ class BluetoothCtlSession:
 def scan_once(bt: BluetoothCtlSession, scan_time: int) -> tuple[PresenceStatus, str]:
     try:
         bt.ensure_alive()
-        bt.ensure_scan_on()   # каждый цикл принудительно подтверждаем scan on
+        bt.ensure_scan_on()   
         time.sleep(scan_time)
         devices_output = bt.get_devices_output()
         return PresenceStatus.ABSENT, devices_output
