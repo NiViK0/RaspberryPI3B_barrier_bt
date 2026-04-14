@@ -1,0 +1,14 @@
+[Unit]
+Description=Barrier Web Panel
+After=network.target barrier.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/barrier
+ExecStart=/usr/bin/python3 /opt/barrier/panel.py
+Restart=always
+RestartSec=3
+User=root
+
+[Install]
+WantedBy=multi-user.target
