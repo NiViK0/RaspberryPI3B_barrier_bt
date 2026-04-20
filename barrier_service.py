@@ -149,12 +149,17 @@ def cmd_run(config: Config) -> None:
 
     try:
         allowed_macs = get_enabled_macs(config.db_path)
-        if not allowed_macs:
-            logging.error("В базе нет разрешённых MAC-адресов")
-            log_db_event(config, "ERROR", "service", "empty-allow-list", "В базе нет разрешённых MAC-адресов")
-            sys.exit(1)
-
         logging.info("Разрешённых MAC-адресов: %s", len(allowed_macs))
+        if not allowed_macs:
+            logging.warning("Список разрешённых MAC пуст, сервис будет ждать добавления устройства")
+            log_db_event(
+                config,
+                "WARN",
+                "service",
+                "empty-allow-list",
+                "Список разрешённых MAC пуст, сервис ждёт добавления устройства",
+            )
+
         log_db_event(config, "INFO", "service", "service-start", "BLE-сервис запущен")
         bt.start()
 
