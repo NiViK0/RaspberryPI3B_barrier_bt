@@ -5,8 +5,6 @@ import sys
 import time
 from dataclasses import replace
 
-from serial import SerialException
-
 from barrier_bluetooth import BluetoothCtlSession, scan_once
 from barrier_config import Config, load_config
 from barrier_db import (
@@ -21,7 +19,7 @@ from barrier_db import (
     set_device_enabled,
 )
 from barrier_presence import detect_any_target_presence, process_presence, validate_mac
-from barrier_relay import RelayController, detect_relay_port
+from barrier_relay import RelayController, SerialDependencyError, SerialException, detect_relay_port
 from barrier_types import PresenceStatus, State
 
 
@@ -104,8 +102,12 @@ def cmd_remove(config: Config, mac: str) -> None:
 
 def cmd_test_open(config: Config) -> None:
     init_db(config.db_path)
-    with RelayController(config) as relay:
-        relay.pulse()
+    try:
+        with RelayController(config) as relay:
+            relay.pulse()
+    except SerialDependencyError as exc:
+        print(exc)
+        sys.exit(1)
     log_db_event(config, "INFO", "cli", "relay-test", "Тестовый импульс на реле отправлен")
     print("Тестовый импульс на реле отправлен")
 
@@ -181,6 +183,10 @@ def cmd_run(config: Config) -> None:
     except SerialException:
         logging.exception("Ошибка доступа к порту реле: %s", config.relay_port)
         log_db_event(config, "ERROR", "service", "relay-open-error", f"Ошибка доступа к порту реле: {config.relay_port}")
+        sys.exit(1)
+    except SerialDependencyError as exc:
+        logging.error("%s", exc)
+        log_db_event(config, "ERROR", "service", "serial-dependency-error", str(exc))
         sys.exit(1)
     except Exception:
         logging.exception("Критическая ошибка")
