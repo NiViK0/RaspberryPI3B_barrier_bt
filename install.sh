@@ -99,7 +99,18 @@ create_venv() {
 
   log "Обновляю pip и ставлю зависимости"
   sudo -u "$SERVICE_USER" "$VENV_PYTHON" -m pip install --upgrade pip
-  sudo -u "$SERVICE_USER" "$VENV_PYTHON" -m pip install pyserial flask
+  if [[ -f "${SRC_DIR}/requirements.txt" ]]; then
+    sudo -u "$SERVICE_USER" "$VENV_PYTHON" -m pip install -r "${SRC_DIR}/requirements.txt"
+  else
+    sudo -u "$SERVICE_USER" "$VENV_PYTHON" -m pip install pyserial flask
+  fi
+
+  sudo -u "$SERVICE_USER" "$VENV_PYTHON" - <<'PY'
+import flask
+import serial
+
+print("Python-зависимости проверены")
+PY
 }
 
 enable_bluetooth() {

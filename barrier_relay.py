@@ -1,13 +1,31 @@
 import glob
 import logging
 import time
-
-import serial
-from serial import SerialException
+from typing import Any
 
 from barrier_config import Config
 
 SERIAL_PORT_PATTERNS = ("/dev/ttyUSB*", "/dev/ttyACM*")
+
+
+class SerialDependencyError(RuntimeError):
+    pass
+
+
+class SerialException(Exception):
+    pass
+
+
+def _load_serial_module() -> Any:
+    try:
+        import serial
+    except ModuleNotFoundError as exc:
+        raise SerialDependencyError(
+            "Не установлен pyserial. Выполните: "
+            "/opt/barrier/venv/bin/python -m pip install pyserial"
+        ) from exc
+
+    return serial
 
 
 def detect_relay_port() -> str | None:
@@ -32,7 +50,7 @@ class RelayController:
     def __init__(self, config: Config) -> None:
         self.config = config
         self.port = ""
-        self.ser: serial.Serial | None = None
+        self.ser: Any | None = None
 
     def __enter__(self) -> "RelayController":
         if self.config.dry_run:
@@ -40,7 +58,11 @@ class RelayController:
             return self
 
         self.port = resolve_relay_port(self.config)
-        self.ser = serial.Serial(self.port, self.config.relay_baudrate, timeout=1)
+        serial_module = _load_serial_module()
+        try:
+            self.ser = serial_module.Serial(self.port, self.config.relay_baudrate, timeout=1)
+        except Exception as exc:
+            raise SerialException(str(exc)) from exc
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
@@ -55,10 +77,15 @@ class RelayController:
         if self.ser is None:
             raise SerialException("Serial-порт реле не открыт")
 
-        self.ser.write(self.config.relay_on_cmd)
-        self.ser.flush()
         try:
-            time.sleep(self.config.pulse_time)
-        finally:
-            self.ser.write(self.config.relay_off_cmd)
+            self.ser.write(self.config.relay_on_cmd)
             self.ser.flush()
+            time.sleep(self.config.pulse_time)
+        except Exception as exc:
+            raise SerialException(str(exc)) from exc
+        finally:
+            try:
+                self.ser.write(self.config.relay_off_cmd)
+                self.ser.flush()
+            except Exception as exc:
+                raise SerialException(str(exc)) from exc
