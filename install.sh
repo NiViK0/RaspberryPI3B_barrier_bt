@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 REPO_URL="https://github.com/NiViK0/RaspberryPI3B_barrier_bt.git"
-BRANCH="main"
+BRANCH="${BRANCH:-main}"
 
 APP_DIR="/opt/barrier"
 SRC_DIR="${APP_DIR}/src"
@@ -80,6 +80,15 @@ check_repo_files() {
     err "Структура репозитория не совпала с ожидаемой"
     exit 1
   fi
+}
+
+create_compat_symlinks() {
+  log "Создаю совместимые ссылки в ${APP_DIR}"
+  ln -sfn "${SRC_DIR}/barrier_service.py" "${APP_DIR}/barrier_service.py"
+  ln -sfn "${SRC_DIR}/panel.py" "${APP_DIR}/panel.py"
+  chown -h "${SERVICE_USER}:${SERVICE_GROUP}" \
+    "${APP_DIR}/barrier_service.py" \
+    "${APP_DIR}/panel.py" || true
 }
 
 create_venv() {
@@ -217,6 +226,7 @@ main() {
   prepare_dirs
   fetch_repo
   check_repo_files
+  create_compat_symlinks
   create_venv
   enable_bluetooth
   grant_serial_access
