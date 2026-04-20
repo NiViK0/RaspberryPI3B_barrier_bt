@@ -1,51 +1,28 @@
 #!/usr/bin/env python3
 import argparse
 import logging
-import os
-import re
-import sqlite3
-import subprocess
 import sys
 import time
-from dataclasses import dataclass
-from enum import Enum, auto
+from dataclasses import replace
 
-import serial
 from serial import SerialException
 
-
-# =========================
-# НАСТРОЙКИ
-# =========================
-
-@dataclass(frozen=True)
-class Config:
-    db_path: str = "/opt/barrier/barrier.db"
-
-    relay_port: str = "/dev/ttyUSB0"
-    relay_baudrate: int = 9600
-
-    scan_time: int = 8
-    check_interval: int = 2
-    cooldown: int = 15
-    pulse_time: int = 2
-    missing_threshold: int = 3
-
-    relay_on_cmd: bytes = b"\xA0\x01\x01\xA2"
-    relay_off_cmd: bytes = b"\xA0\x01\x00\xA1"
-
-
-class PresenceStatus(Enum):
-    PRESENT = auto()
-    ABSENT = auto()
-    SCAN_FAILED = auto()
-
-
-@dataclass
-class State:
-    any_device_was_present: bool = False
-    missing_count: int = 0
-    last_trigger_monotonic: float = 0.0
+from barrier_bluetooth import BluetoothCtlSession, scan_once
+from barrier_config import Config, load_config
+from barrier_db import (
+    add_device,
+    backup_db,
+    get_enabled_macs,
+    init_db,
+    list_devices,
+    log_event,
+    normalize_mac,
+    remove_device,
+    set_device_enabled,
+)
+from barrier_presence import detect_any_target_presence, process_presence, validate_mac
+from barrier_relay import RelayController, detect_relay_port
+from barrier_types import PresenceStatus, State
 
 
 def setup_logging() -> None:
@@ -56,277 +33,28 @@ def setup_logging() -> None:
     )
 
 
-def validate_mac(mac: str) -> bool:
-    return bool(re.fullmatch(r"([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}", mac.strip()))
-
-
-# =========================
-# SQLITE
-# =========================
-
-def init_db(db_path: str) -> None:
-    os.makedirs(os.path.dirname(db_path), exist_ok=True)
-    with sqlite3.connect(db_path) as conn:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS allowed_devices (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
-                mac TEXT NOT NULL UNIQUE,
-                enabled INTEGER NOT NULL DEFAULT 1,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            )
-            """
-        )
-        conn.commit()
-
-
-def add_device(db_path: str, mac: str, name: str) -> None:
-    mac = mac.upper().strip()
-    if not validate_mac(mac):
-        raise ValueError(f"Некорректный MAC: {mac}")
-
-    with sqlite3.connect(db_path) as conn:
-        conn.execute(
-            """
-            INSERT INTO allowed_devices(name, mac, enabled)
-            VALUES (?, ?, 1)
-            ON CONFLICT(mac) DO UPDATE SET
-                name = excluded.name,
-                enabled = 1
-            """,
-            (name.strip(), mac),
-        )
-        conn.commit()
-
-
-def list_devices(db_path: str) -> list[tuple[int, str, str, int]]:
-    with sqlite3.connect(db_path) as conn:
-        rows = conn.execute(
-            "SELECT id, name, mac, enabled FROM allowed_devices ORDER BY name"
-        ).fetchall()
-    return rows
-
-
-def set_device_enabled(db_path: str, mac: str, enabled: bool) -> bool:
-    mac = mac.upper().strip()
-    with sqlite3.connect(db_path) as conn:
-        cur = conn.execute(
-            "UPDATE allowed_devices SET enabled = ? WHERE mac = ?",
-            (1 if enabled else 0, mac),
-        )
-        conn.commit()
-    return cur.rowcount > 0
-
-
-def remove_device(db_path: str, mac: str) -> bool:
-    mac = mac.upper().strip()
-    with sqlite3.connect(db_path) as conn:
-        cur = conn.execute("DELETE FROM allowed_devices WHERE mac = ?", (mac,))
-        conn.commit()
-    return cur.rowcount > 0
-
-
-def get_enabled_macs(db_path: str) -> list[str]:
-    with sqlite3.connect(db_path) as conn:
-        rows = conn.execute(
-            "SELECT mac FROM allowed_devices WHERE enabled = 1"
-        ).fetchall()
-    return [row[0].upper() for row in rows]
-
-
-# =========================
-# BLUETOOTHCTL
-# =========================
-
-class BluetoothCtlSession:
-    def __init__(self) -> None:
-        self.proc: subprocess.Popen | None = None
-
-    def start(self) -> None:
-        if self.proc and self.proc.poll() is None:
-            return
-
-        self.proc = subprocess.Popen(
-            ["bluetoothctl"],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            bufsize=1,
-        )
-        time.sleep(1.0)
-        self.send("power on")
-        self.send("agent on")
-        self.send("default-agent")
-        self.send("scan on")
-        logging.info("bluetoothctl запущен, Bluetooth включён, scan on активирован")
-
-    def stop(self) -> None:
-        if self.proc:
-            try:
-                self.send("scan off")
-                self.send("quit")
-            except Exception:
-                pass
-            try:
-                self.proc.terminate()
-            except Exception:
-                pass
-            self.proc = None
-
-    def ensure_alive(self) -> None:
-        if self.proc is None or self.proc.poll() is not None:
-            logging.warning("bluetoothctl не запущен, выполняется перезапуск")
-            self.start()
-
-    def send(self, command: str) -> None:
-        self.ensure_alive()
-        assert self.proc is not None
-        assert self.proc.stdin is not None
-        self.proc.stdin.write(command + "\n")
-        self.proc.stdin.flush()
-
-    def ensure_scan_on(self) -> None:
-        self.send("scan on")
-
-    def get_devices_output(self) -> str:
-        result = subprocess.run(
-            ["bluetoothctl", "devices"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            encoding="utf-8",
-            errors="replace",
-        )
-        output = ((result.stdout or "") + (result.stderr or "")).strip()
-        if result.returncode != 0:
-            raise RuntimeError(output or "Не удалось выполнить bluetoothctl devices")
-        return output
-
-
-def scan_once(bt: BluetoothCtlSession, scan_time: int) -> tuple[PresenceStatus, str]:
+def log_db_event(config: Config, level: str, source: str, action: str, message: str) -> None:
     try:
-        bt.ensure_alive()
-        bt.ensure_scan_on()
-        time.sleep(scan_time)
-        devices_output = bt.get_devices_output()
-        return PresenceStatus.ABSENT, devices_output
-    except Exception as exc:
-        logging.warning("Ошибка BLE-сканирования: %s", exc)
-        return PresenceStatus.SCAN_FAILED, ""
-
-
-# =========================
-# РЕЛЕ / ЛОГИКА
-# =========================
-
-def detect_any_target_presence(devices_output: str, allowed_macs: list[str]) -> PresenceStatus:
-    devices_upper = devices_output.upper()
-    for mac in allowed_macs:
-        if mac in devices_upper:
-            logging.info("Обнаружен разрешённый MAC: %s", mac)
-            return PresenceStatus.PRESENT
-    return PresenceStatus.ABSENT
-
-
-def pulse_relay(ser: serial.Serial, config: Config) -> None:
-    ser.write(config.relay_on_cmd)
-    ser.flush()
-    try:
-        time.sleep(config.pulse_time)
-    finally:
-        ser.write(config.relay_off_cmd)
-        ser.flush()
-
-
-def trigger_barrier(ser: serial.Serial, config: Config, state: State, action: str) -> bool:
-    now = time.monotonic()
-    if now - state.last_trigger_monotonic < config.cooldown:
-        logging.info("Импульс '%s' заблокирован cooldown", action)
-        return False
-
-    if action == "open":
-        logging.info(">>> Разрешённый телефон найден, открываем шлагбаум")
-    elif action == "close":
-        logging.info("<<< Телефон исчез, закрываем шлагбаум")
-    else:
-        logging.info("*** Выполняем действие: %s", action)
-
-    try:
-        pulse_relay(ser, config)
-    except SerialException:
-        logging.exception("Ошибка работы с реле")
-        return False
+        log_event(config.db_path, level, source, action, message)
     except Exception:
-        logging.exception("Неожиданная ошибка при работе с реле")
-        return False
+        logging.debug("Не удалось записать событие в БД", exc_info=True)
 
-    state.last_trigger_monotonic = now
-    return True
-
-
-def process_presence(
-    presence: PresenceStatus,
-    devices_output: str,
-    ser: serial.Serial,
-    config: Config,
-    state: State,
-) -> None:
-    if devices_output.strip():
-        logging.info("Найденные устройства:\n%s", devices_output)
-    else:
-        logging.info("Список устройств пуст")
-
-    if presence == PresenceStatus.SCAN_FAILED:
-        logging.warning("Сканирование не удалось, состояние не меняем")
-        return
-
-    if presence == PresenceStatus.PRESENT:
-        state.missing_count = 0
-        if not state.any_device_was_present:
-            if trigger_barrier(ser, config, state, "open"):
-                state.any_device_was_present = True
-        else:
-            logging.info("Разрешённое устройство всё ещё в зоне")
-        return
-
-    if state.any_device_was_present:
-        state.missing_count += 1
-        logging.info(
-            "Разрешённое устройство не найдено (%s/%s)",
-            state.missing_count,
-            config.missing_threshold,
-        )
-        if state.missing_count >= config.missing_threshold:
-            if trigger_barrier(ser, config, state, "close"):
-                state.any_device_was_present = False
-                state.missing_count = 0
-    else:
-        logging.info("Разрешённые устройства не найдены")
-        state.missing_count = 0
-
-
-def test_open(config: Config) -> None:
-    with serial.Serial(config.relay_port, config.relay_baudrate, timeout=1) as ser:
-        pulse_relay(ser, config)
-
-
-# =========================
-# КОМАНДЫ
-# =========================
 
 def cmd_init_db(config: Config) -> None:
     init_db(config.db_path)
+    log_db_event(config, "INFO", "cli", "init-db", f"База инициализирована: {config.db_path}")
     print(f"База инициализирована: {config.db_path}")
 
 
 def cmd_add(config: Config, mac: str, name: str) -> None:
     init_db(config.db_path)
-    add_device(config.db_path, mac, name)
-    print(f"Добавлено: {name} [{mac.upper()}]")
+    normalized_mac = normalize_mac(mac)
+    if not validate_mac(normalized_mac):
+        raise ValueError(f"Некорректный MAC: {normalized_mac}")
+
+    add_device(config.db_path, normalized_mac, name)
+    log_db_event(config, "INFO", "cli", "device-add", f"Добавлено: {name} [{normalized_mac}]")
+    print(f"Добавлено: {name} [{normalized_mac}]")
 
 
 def cmd_list(config: Config) -> None:
@@ -343,34 +71,58 @@ def cmd_list(config: Config) -> None:
 
 def cmd_enable(config: Config, mac: str) -> None:
     init_db(config.db_path)
-    if set_device_enabled(config.db_path, mac, True):
-        print(f"Устройство включено: {mac.upper()}")
+    normalized_mac = normalize_mac(mac)
+    if set_device_enabled(config.db_path, normalized_mac, True):
+        log_db_event(config, "INFO", "cli", "device-enable", f"Устройство включено: {normalized_mac}")
+        print(f"Устройство включено: {normalized_mac}")
     else:
-        print(f"Устройство не найдено: {mac.upper()}")
+        print(f"Устройство не найдено: {normalized_mac}")
         sys.exit(1)
 
 
 def cmd_disable(config: Config, mac: str) -> None:
     init_db(config.db_path)
-    if set_device_enabled(config.db_path, mac, False):
-        print(f"Устройство отключено: {mac.upper()}")
+    normalized_mac = normalize_mac(mac)
+    if set_device_enabled(config.db_path, normalized_mac, False):
+        log_db_event(config, "INFO", "cli", "device-disable", f"Устройство отключено: {normalized_mac}")
+        print(f"Устройство отключено: {normalized_mac}")
     else:
-        print(f"Устройство не найдено: {mac.upper()}")
+        print(f"Устройство не найдено: {normalized_mac}")
         sys.exit(1)
 
 
 def cmd_remove(config: Config, mac: str) -> None:
     init_db(config.db_path)
-    if remove_device(config.db_path, mac):
-        print(f"Устройство удалено: {mac.upper()}")
+    normalized_mac = normalize_mac(mac)
+    if remove_device(config.db_path, normalized_mac):
+        log_db_event(config, "INFO", "cli", "device-remove", f"Устройство удалено: {normalized_mac}")
+        print(f"Устройство удалено: {normalized_mac}")
     else:
-        print(f"Устройство не найдено: {mac.upper()}")
+        print(f"Устройство не найдено: {normalized_mac}")
         sys.exit(1)
 
 
 def cmd_test_open(config: Config) -> None:
-    test_open(config)
+    init_db(config.db_path)
+    with RelayController(config) as relay:
+        relay.pulse()
+    log_db_event(config, "INFO", "cli", "relay-test", "Тестовый импульс на реле отправлен")
     print("Тестовый импульс на реле отправлен")
+
+
+def cmd_detect_relay(config: Config) -> None:
+    port = detect_relay_port()
+    if port is None:
+        print("Serial-порт реле не найден")
+        sys.exit(1)
+    print(port)
+
+
+def cmd_backup_db(config: Config) -> None:
+    init_db(config.db_path)
+    backup_path = backup_db(config.db_path, config.backup_dir)
+    log_db_event(config, "INFO", "cli", "backup-db", f"Backup базы создан: {backup_path}")
+    print(f"Backup базы создан: {backup_path}")
 
 
 def cmd_run(config: Config) -> None:
@@ -378,16 +130,33 @@ def cmd_run(config: Config) -> None:
     state = State()
     bt = BluetoothCtlSession()
 
+    def trigger_action(action: str) -> bool:
+        try:
+            relay.pulse()
+        except SerialException:
+            logging.exception("Ошибка работы с реле")
+            log_db_event(config, "ERROR", "service", "relay-error", "Ошибка работы с реле")
+            return False
+        except Exception:
+            logging.exception("Неожиданная ошибка при работе с реле")
+            log_db_event(config, "ERROR", "service", "relay-error", "Неожиданная ошибка при работе с реле")
+            return False
+
+        log_db_event(config, "INFO", "service", f"barrier-{action}", f"Импульс реле: {action}")
+        return True
+
     try:
         allowed_macs = get_enabled_macs(config.db_path)
         if not allowed_macs:
             logging.error("В базе нет разрешённых MAC-адресов")
+            log_db_event(config, "ERROR", "service", "empty-allow-list", "В базе нет разрешённых MAC-адресов")
             sys.exit(1)
 
         logging.info("Разрешённых MAC-адресов: %s", len(allowed_macs))
+        log_db_event(config, "INFO", "service", "service-start", "BLE-сервис запущен")
         bt.start()
 
-        with serial.Serial(config.relay_port, config.relay_baudrate, timeout=1) as ser:
+        with RelayController(config) as relay:
             while True:
                 allowed_macs = get_enabled_macs(config.db_path)
                 if not allowed_macs:
@@ -398,80 +167,82 @@ def cmd_run(config: Config) -> None:
                 base_status, devices_output = scan_once(bt, config.scan_time)
 
                 if base_status == PresenceStatus.SCAN_FAILED:
-                    process_presence(base_status, devices_output, ser, config, state)
+                    log_db_event(config, "WARN", "service", "scan-failed", "BLE-сканирование не удалось")
+                    process_presence(base_status, devices_output, config, state, trigger_action)
                 else:
                     actual_presence = detect_any_target_presence(devices_output, allowed_macs)
-                    process_presence(actual_presence, devices_output, ser, config, state)
+                    process_presence(actual_presence, devices_output, config, state, trigger_action)
 
                 time.sleep(config.check_interval)
 
     except KeyboardInterrupt:
         logging.info("Остановлено пользователем")
+        log_db_event(config, "INFO", "service", "service-stop", "Остановлено пользователем")
     except SerialException:
         logging.exception("Ошибка доступа к порту реле: %s", config.relay_port)
+        log_db_event(config, "ERROR", "service", "relay-open-error", f"Ошибка доступа к порту реле: {config.relay_port}")
         sys.exit(1)
     except Exception:
         logging.exception("Критическая ошибка")
+        log_db_event(config, "ERROR", "service", "critical-error", "Критическая ошибка BLE-сервиса")
         sys.exit(1)
     finally:
         bt.stop()
 
 
-# =========================
-# CLI
-# =========================
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Barrier BLE controller")
+    parser.add_argument("--dry-run", action="store_true", help="Не активировать реле, только логировать")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    subparsers.add_parser("init-db", help="Создать SQLite-базу")
+    p_init_db = subparsers.add_parser("init-db", help="Создать SQLite-базу")
+    p_init_db.set_defaults(handler=lambda config, args: cmd_init_db(config))
 
     p_add = subparsers.add_parser("add", help="Добавить или обновить устройство")
     p_add.add_argument("mac", help="MAC-адрес телефона")
     p_add.add_argument("name", help="Имя устройства")
+    p_add.set_defaults(handler=lambda config, args: cmd_add(config, args.mac, args.name))
 
     p_enable = subparsers.add_parser("enable", help="Включить устройство")
     p_enable.add_argument("mac", help="MAC-адрес устройства")
+    p_enable.set_defaults(handler=lambda config, args: cmd_enable(config, args.mac))
 
     p_disable = subparsers.add_parser("disable", help="Отключить устройство")
     p_disable.add_argument("mac", help="MAC-адрес устройства")
+    p_disable.set_defaults(handler=lambda config, args: cmd_disable(config, args.mac))
 
     p_remove = subparsers.add_parser("remove", help="Удалить устройство")
     p_remove.add_argument("mac", help="MAC-адрес устройства")
+    p_remove.set_defaults(handler=lambda config, args: cmd_remove(config, args.mac))
 
-    subparsers.add_parser("list", help="Показать устройства")
-    subparsers.add_parser("test-open", help="Тестовый импульс на реле")
-    subparsers.add_parser("run", help="Запустить основной цикл")
+    p_list = subparsers.add_parser("list", help="Показать устройства")
+    p_list.set_defaults(handler=lambda config, args: cmd_list(config))
+
+    p_test_open = subparsers.add_parser("test-open", help="Тестовый импульс на реле")
+    p_test_open.set_defaults(handler=lambda config, args: cmd_test_open(config))
+
+    p_detect_relay = subparsers.add_parser("detect-relay", help="Найти serial-порт реле")
+    p_detect_relay.set_defaults(handler=lambda config, args: cmd_detect_relay(config))
+
+    p_backup_db = subparsers.add_parser("backup-db", help="Сделать backup SQLite-базы")
+    p_backup_db.set_defaults(handler=lambda config, args: cmd_backup_db(config))
+
+    p_run = subparsers.add_parser("run", help="Запустить основной цикл")
+    p_run.set_defaults(handler=lambda config, args: cmd_run(config))
 
     return parser
 
 
 def main() -> None:
     setup_logging()
-    config = Config()
-
     parser = build_parser()
     args = parser.parse_args()
 
-    if args.command == "init-db":
-        cmd_init_db(config)
-    elif args.command == "add":
-        cmd_add(config, args.mac, args.name)
-    elif args.command == "enable":
-        cmd_enable(config, args.mac)
-    elif args.command == "disable":
-        cmd_disable(config, args.mac)
-    elif args.command == "remove":
-        cmd_remove(config, args.mac)
-    elif args.command == "list":
-        cmd_list(config)
-    elif args.command == "test-open":
-        cmd_test_open(config)
-    elif args.command == "run":
-        cmd_run(config)
-    else:
-        parser.print_help()
+    config = load_config()
+    if args.dry_run:
+        config = replace(config, dry_run=True)
+
+    args.handler(config, args)
 
 
 if __name__ == "__main__":
