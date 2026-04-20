@@ -253,6 +253,8 @@ $PY $APP --dry-run run
 /opt/barrier/venv/bin/python /opt/barrier/src/panel.py
 ```
 
+Важно: web-панель запускает команды `barrier_service.py` тем же Python-интерпретатором, под которым запущена сама панель. Поэтому панель нужно запускать через `/opt/barrier/venv/bin/python`, а не через системный `python3`. Иначе кнопки, которые работают с реле, могут не увидеть пакет `pyserial`.
+
 Открыть с телефона или компьютера в той же сети:
 
 ```text
@@ -588,6 +590,36 @@ journalctl -u barrier-panel.service -n 100
 sudo systemctl status barrier-panel.service
 ss -tulpn | grep 8080
 hostname -I
+```
+
+### Кнопка в web-панели пишет, что не установлен pyserial
+
+Такое бывает, если панель запущена системным Python, а зависимости установлены в `/opt/barrier/venv`.
+
+Проверьте unit-файл:
+
+```bash
+sudo systemctl cat barrier-panel.service
+```
+
+В `ExecStart` должен быть venv Python:
+
+```text
+ExecStart=/opt/barrier/venv/bin/python /opt/barrier/src/panel.py
+```
+
+Проверьте зависимости:
+
+```bash
+/opt/barrier/venv/bin/python -c "import sys; print(sys.executable); import serial; print(serial.__file__)"
+```
+
+После обновления кода перезапустите панель:
+
+```bash
+cd /opt/barrier/src
+git pull origin main
+sudo systemctl restart barrier-panel.service
 ```
 
 ### Пароль не принимается
