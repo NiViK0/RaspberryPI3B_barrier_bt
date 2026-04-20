@@ -5,6 +5,8 @@ from dataclasses import dataclass
 
 from flask import Flask, redirect, render_template_string, request, url_for
 
+DeviceRow = tuple[int, str, str, int]
+
 
 @dataclass(frozen=True)
 class Config:
@@ -114,7 +116,7 @@ HTML = """
 """
 
 
-def db_rows() -> list[tuple[int, str, str, int]]:
+def db_rows() -> list[DeviceRow]:
     with sqlite3.connect(config.db_path) as conn:
         rows = conn.execute(
             "SELECT id, name, mac, enabled FROM allowed_devices ORDER BY name"
@@ -129,6 +131,21 @@ def run_barrier_command(args: list[str]) -> tuple[bool, str]:
     return result.returncode == 0, output.strip()
 
 
+def redirect_with_result(ok: bool, output: str, default_message: str = "Готово"):
+    return redirect(
+        url_for(
+            "index",
+            message=output or default_message,
+            success="1" if ok else "0",
+        )
+    )
+
+
+def run_and_redirect(args: list[str], default_message: str = "Готово"):
+    ok, output = run_barrier_command(args)
+    return redirect_with_result(ok, output, default_message)
+
+
 @app.route("/")
 def index():
     message = request.args.get("message", "")
@@ -140,32 +157,27 @@ def index():
 def add_device():
     name = request.form.get("name", "").strip()
     mac = request.form.get("mac", "").strip()
-    ok, output = run_barrier_command(["add", mac, name])
-    return redirect(url_for("index", message=output or "Готово", success="1" if ok else "0"))
+    return run_and_redirect(["add", mac, name])
 
 
 @app.route("/enable/<mac>", methods=["POST"])
 def enable_device(mac: str):
-    ok, output = run_barrier_command(["enable", mac])
-    return redirect(url_for("index", message=output or "Готово", success="1" if ok else "0"))
+    return run_and_redirect(["enable", mac])
 
 
 @app.route("/disable/<mac>", methods=["POST"])
 def disable_device(mac: str):
-    ok, output = run_barrier_command(["disable", mac])
-    return redirect(url_for("index", message=output or "Готово", success="1" if ok else "0"))
+    return run_and_redirect(["disable", mac])
 
 
 @app.route("/remove/<mac>", methods=["POST"])
 def remove_device(mac: str):
-    ok, output = run_barrier_command(["remove", mac])
-    return redirect(url_for("index", message=output or "Готово", success="1" if ok else "0"))
+    return run_and_redirect(["remove", mac])
 
 
 @app.route("/test-open", methods=["POST"])
 def test_open():
-    ok, output = run_barrier_command(["test-open"])
-    return redirect(url_for("index", message=output or "Готово", success="1" if ok else "0"))
+    return run_and_redirect(["test-open"])
 
 
 @app.route("/restart-bluetooth", methods=["POST"])
@@ -174,7 +186,7 @@ def restart_bluetooth():
     result = subprocess.run(cmd, capture_output=True, text=True)
     output = (result.stdout or "") + (result.stderr or "")
     ok = result.returncode == 0
-    return redirect(url_for("index", message=output.strip() or "Bluetooth перезапущен", success="1" if ok else "0"))
+    return redirect_with_result(ok, output.strip(), "Bluetooth перезапущен")
 
 
 if __name__ == "__main__":
