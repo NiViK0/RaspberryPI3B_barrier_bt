@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import secrets
 import subprocess
+import sys
 from functools import wraps
 
 from flask import Flask, redirect, render_template_string, request, session, url_for
@@ -211,7 +212,7 @@ def login_required(view):
 
 
 def run_barrier_command(args: list[str]) -> tuple[bool, str]:
-    cmd = ["python3", config.barrier_script] + args
+    cmd = [sys.executable, config.barrier_script] + args
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
     output = (result.stdout or "") + (result.stderr or "")
     return result.returncode == 0, output.strip()
