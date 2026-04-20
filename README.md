@@ -1,159 +1,357 @@
-# Barrier BLE Controller on Raspberry Pi
+# Barrier BLE Controller
 
-## Быстрое обновление: конфигурация через env
+Сервис для управления шлагбаумом с Raspberry Pi или другого Linux-одноплатника. Система ищет разрешенные Bluetooth/BLE-устройства по MAC-адресам, хранит список устройств в SQLite, управляет serial-реле и дает web-панель для управления с телефона.
 
-Основные настройки теперь можно задавать переменными окружения, не меняя Python-код. Пример лежит в `.env.example`.
+## Возможности
 
-Часто используемые переменные:
+- Поиск разрешенных устройств через `bluetoothctl`.
+- Список устройств в SQLite.
+- Включение, отключение и удаление устройств через CLI и web-панель.
+- Управление USB/serial-реле.
+- Dry-run режим для проверки без реального реле.
+- Автоопределение serial-порта реле.
+- Журнал событий в SQLite.
+- Backup базы данных.
+- Web-панель со статусом системы, последними событиями и опциональным паролем.
+- Автозапуск через `systemd`.
+- Unit-тесты логики присутствия устройств.
+
+## Структура проекта
+
+```text
+barrier_service.py      CLI и основной сервисный цикл
+panel.py                Flask web-панель
+barrier_config.py       Конфигурация из переменных окружения
+barrier_db.py           SQLite, устройства, события, backup
+barrier_bluetooth.py    Работа с bluetoothctl
+barrier_relay.py        Serial-реле, dry-run, автоопределение порта
+barrier_presence.py     Логика присутствия устройства
+barrier_types.py        Общие типы и состояние
+install.sh              Установка на Raspberry Pi/Linux через systemd
+.env.example            Пример переменных окружения
+tests/                  Unit-тесты
+```
+
+## Архитектура
+
+```text
+Телефон / BLE-устройство
+        |
+        v
+bluetoothctl scan
+        |
+        v
+barrier_service.py
+        |
+        +--> SQLite: allowed_devices, event_log
+        |
+        +--> serial relay
+        |
+        v
+Шлагбаум
+
+panel.py читает ту же SQLite-базу и вызывает barrier_service.py для команд управления.
+```
+
+## Быстрая установка
+
+На Raspberry Pi или другом Linux-устройстве:
+
+```bash
+git clone https://github.com/NiViK0/RaspberryPI3B_barrier_bt.git /tmp/barrier
+cd /tmp/barrier
+sudo bash install.sh
+```
+
+Скрипт:
+
+- установит системные пакеты;
+- создаст `/opt/barrier`;
+- склонирует репозиторий в `/opt/barrier/src`;
+- создаст virtualenv в `/opt/barrier/venv`;
+- установит `pyserial` и `flask`;
+- создаст systemd-сервисы;
+- инициализирует SQLite-базу;
+- запустит web-панель;
+- попробует запустить BLE-сервис.
+
+Если BLE-сервис не стартует сразу, это нормально: сначала может понадобиться добавить MAC-адрес телефона и проверить реле.
+
+## Переменные окружения
+
+Настройки можно задавать через переменные окружения. Пример есть в `.env.example`.
+
+Основные переменные:
 
 ```bash
 BARRIER_DB_PATH=/opt/barrier/barrier.db
 BARRIER_BACKUP_DIR=/opt/barrier/backups
 BARRIER_SCRIPT=/opt/barrier/src/barrier_service.py
+
 BARRIER_RELAY_PORT=/dev/ttyUSB0
 BARRIER_RELAY_PORT=auto
+BARRIER_RELAY_BAUDRATE=9600
 BARRIER_DRY_RUN=false
-BARRIER_PANEL_PASSWORD=strong-password
+
+BARRIER_SCAN_TIME=8
+BARRIER_CHECK_INTERVAL=2
+BARRIER_COOLDOWN=15
+BARRIER_PULSE_TIME=2
+BARRIER_MISSING_THRESHOLD=3
+
+BARRIER_PANEL_HOST=0.0.0.0
 BARRIER_PANEL_PORT=8080
+BARRIER_PANEL_PASSWORD=
+BARRIER_FLASK_SECRET_KEY=change-me
 ```
 
-Новые команды:
+`BARRIER_RELAY_PORT=auto` включает поиск первого доступного порта из `/dev/ttyUSB*` и `/dev/ttyACM*`.
+
+`BARRIER_DRY_RUN=true` отключает реальную активацию реле. Сервис будет логировать действия, но не писать в serial-порт.
+
+`BARRIER_PANEL_PASSWORD` включает пароль для web-панели. Если переменная пустая, панель доступна без логина.
+
+`BARRIER_FLASK_SECRET_KEY` нужен Flask-сессиям. Для реального устройства лучше задать свое случайное значение.
+
+## Настройка systemd env
+
+`install.sh` уже добавляет основные переменные в unit-файлы:
+
+```ini
+Environment=BARRIER_DB_PATH=/opt/barrier/barrier.db
+Environment=BARRIER_BACKUP_DIR=/opt/barrier/backups
+Environment=BARRIER_SCRIPT=/opt/barrier/src/barrier_service.py
+```
+
+Чтобы добавить пароль панели или поменять порт реле:
 
 ```bash
-/opt/barrier/venv/bin/python /opt/barrier/src/barrier_service.py detect-relay
-/opt/barrier/venv/bin/python /opt/barrier/src/barrier_service.py backup-db
-/opt/barrier/venv/bin/python /opt/barrier/src/barrier_service.py --dry-run test-open
+sudo systemctl edit barrier-panel.service
 ```
 
-Если `BARRIER_PANEL_PASSWORD` пустой, web-панель работает без пароля. Если переменная задана, панель требует вход.
+Пример override:
 
-Система для управления шлагбаумом на одноплатном компьютере через Bluetooth Low Energy.
+```ini
+[Service]
+Environment=BARRIER_PANEL_PASSWORD=strong-password
+Environment=BARRIER_FLASK_SECRET_KEY=replace-with-random-string
+```
 
-Что умеет:
+Для BLE-сервиса:
 
-* ищет разрешённые устройства по MAC-адресам;
-* хранит список устройств в `SQLite`;
-* управляет реле;
-* поднимает web-панель для управления с телефона;
-* запускается автоматически через `systemd`.
+```bash
+sudo systemctl edit barrier.service
+```
 
-## Архитектура
+Пример override:
+
+```ini
+[Service]
+Environment=BARRIER_RELAY_PORT=auto
+Environment=BARRIER_DRY_RUN=false
+```
+
+После изменения:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart barrier.service barrier-panel.service
+```
+
+## CLI
+
+Все команды ниже рассчитаны на установку через `install.sh`.
+
+```bash
+PY=/opt/barrier/venv/bin/python
+APP=/opt/barrier/src/barrier_service.py
+```
+
+Инициализировать базу:
+
+```bash
+$PY $APP init-db
+```
+
+Добавить или обновить устройство:
+
+```bash
+$PY $APP add AA:BB:CC:DD:EE:FF "My Phone"
+```
+
+Показать устройства:
+
+```bash
+$PY $APP list
+```
+
+Включить устройство:
+
+```bash
+$PY $APP enable AA:BB:CC:DD:EE:FF
+```
+
+Отключить устройство:
+
+```bash
+$PY $APP disable AA:BB:CC:DD:EE:FF
+```
+
+Удалить устройство:
+
+```bash
+$PY $APP remove AA:BB:CC:DD:EE:FF
+```
+
+Тестовый импульс реле:
+
+```bash
+$PY $APP test-open
+```
+
+Тест без реального реле:
+
+```bash
+$PY $APP --dry-run test-open
+```
+
+Найти serial-порт реле:
+
+```bash
+$PY $APP detect-relay
+```
+
+Сделать backup базы:
+
+```bash
+$PY $APP backup-db
+```
+
+Запустить основной BLE-цикл вручную:
+
+```bash
+$PY $APP run
+```
+
+Запустить основной цикл без активации реле:
+
+```bash
+$PY $APP --dry-run run
+```
+
+## Web-панель
+
+Ручной запуск:
+
+```bash
+/opt/barrier/venv/bin/python /opt/barrier/src/panel.py
+```
+
+Открыть с телефона или компьютера в той же сети:
 
 ```text
-Телефон (BLE)
-      ↓
-Raspberry Pi / одноплатник
-      ↓
-Python-сервис
-      ↓
-SQLite (список MAC)
-      ↓
-USB-реле / serial relay
-      ↓
-Шлагбаум
+http://IP_УСТРОЙСТВА:8080
 ```
 
----
-
-# 1. Что должно быть подготовлено
-
-Нужно:
-
-* Raspberry Pi / другой одноплатник с Linux;
-* Bluetooth-адаптер;
-* Wi-Fi;
-* USB-реле или serial-реле;
-* Python 3;
-* файлы проекта:
-
-  * `barrier_service.py`
-  * `panel.py`
-
-Опционально:
-
-* `barrier.service`
-* `barrier-panel.service`
-
----
-
-# 2. Установка системы
-
-## 2.1 Подключение к устройству
+IP можно узнать так:
 
 ```bash
-ssh USER@IP_ОДНОПЛАТНИКА
+hostname -I
 ```
 
-## 2.2 Установка системных пакетов
+В панели доступны:
+
+- список разрешенных устройств;
+- добавление устройства;
+- включение и отключение устройства;
+- удаление устройства;
+- тестовое открытие;
+- restart Bluetooth;
+- backup базы;
+- статус системы;
+- последние события из SQLite.
+
+## Пароль web-панели
+
+По умолчанию пароль выключен.
+
+Чтобы включить пароль:
 
 ```bash
-sudo apt update
-sudo apt install -y python3 python3-pip python3-venv bluetooth bluez sqlite3
+sudo systemctl edit barrier-panel.service
 ```
 
----
+Добавить:
 
-# 3. Подготовка рабочей директории
-
-```bash
-sudo mkdir -p /opt/barrier
-sudo chown -R $USER:$USER /opt/barrier
-cd /opt/barrier
+```ini
+[Service]
+Environment=BARRIER_PANEL_PASSWORD=strong-password
+Environment=BARRIER_FLASK_SECRET_KEY=replace-with-random-string
 ```
 
----
-
-# 4. Копирование файлов проекта
-
-Если копируете с другого компьютера:
+Применить:
 
 ```bash
-scp barrier_service.py panel.py USER@IP_ОДНОПЛАТНИКА:/opt/barrier/
+sudo systemctl daemon-reload
+sudo systemctl restart barrier-panel.service
 ```
 
-Если есть unit-файлы:
+После этого web-панель будет открывать страницу входа.
 
-```bash
-scp barrier.service barrier-panel.service USER@IP_ОДНОПЛАТНИКА:/opt/barrier/
+## SQLite
+
+База по умолчанию:
+
+```text
+/opt/barrier/barrier.db
 ```
 
-Проверка:
+Таблицы:
+
+- `allowed_devices`: разрешенные устройства;
+- `event_log`: журнал событий.
+
+Журнал событий заполняется сервисом, CLI и web-панелью. В него пишутся добавления устройств, включение/отключение, тесты реле, backup, ошибки сканирования и импульсы открытия/закрытия.
+
+## Backup базы
+
+CLI:
 
 ```bash
-ls -l /opt/barrier
+/opt/barrier/venv/bin/python /opt/barrier/src/barrier_service.py backup-db
 ```
 
----
+Web-панель:
 
-# 5. Создание Python virtualenv
-
-```bash
-cd /opt/barrier
-python3 -m venv venv
-source /opt/barrier/venv/bin/activate
-pip install --upgrade pip
-pip install pyserial flask
+```text
+Быстрые действия -> Сделать backup базы
 ```
 
----
+Файлы сохраняются в:
 
-# 6. Права на запуск
-
-```bash
-chmod +x /opt/barrier/barrier_service.py
-chmod +x /opt/barrier/panel.py
+```text
+/opt/barrier/backups
 ```
 
----
+Имя файла выглядит примерно так:
 
-# 7. Проверка Bluetooth
+```text
+barrier-20260420-153000.db
+```
 
-Включить и запустить системный Bluetooth:
+## Bluetooth
+
+Проверить адаптер:
 
 ```bash
-sudo systemctl enable bluetooth
-sudo systemctl start bluetooth
 bluetoothctl show
+```
+
+Ручное сканирование:
+
+```bash
+timeout 15s bluetoothctl scan on
+bluetoothctl devices
 ```
 
 Если адаптер выключен:
@@ -171,383 +369,182 @@ default-agent
 quit
 ```
 
----
+## Реле
 
-# 8. Проверка serial-реле
-
-Посмотреть доступные порты:
+Посмотреть доступные serial-порты:
 
 ```bash
 ls -l /dev/ttyUSB* /dev/ttyACM* 2>/dev/null
 ```
 
-Если пользователь не имеет доступа к serial-порту:
+Проверить автоопределение:
+
+```bash
+/opt/barrier/venv/bin/python /opt/barrier/src/barrier_service.py detect-relay
+```
+
+Если у пользователя нет доступа к serial-порту:
 
 ```bash
 sudo usermod -aG dialout $USER
-newgrp dialout
 ```
 
-После этого желательно переподключиться по SSH.
+После этого лучше перелогиниться или перезагрузить устройство.
 
----
-
-# 9. Инициализация базы данных
+Тест реле:
 
 ```bash
-/opt/barrier/venv/bin/python /opt/barrier/barrier_service.py init-db
+/opt/barrier/venv/bin/python /opt/barrier/src/barrier_service.py test-open
 ```
 
----
-
-# 10. Добавление телефона в базу
-
-Пример:
+Безопасный тест без реле:
 
 ```bash
-/opt/barrier/venv/bin/python /opt/barrier/barrier_service.py add AA:BB:CC:DD:EE:FF "My Phone"
+/opt/barrier/venv/bin/python /opt/barrier/src/barrier_service.py --dry-run test-open
 ```
 
-Посмотреть список устройств:
+## Systemd
 
-```bash
-/opt/barrier/venv/bin/python /opt/barrier/barrier_service.py list
-```
-
----
-
-# 11. Как узнать MAC телефона
-
-Можно просканировать Bluetooth-окружение:
-
-```bash
-timeout 15s bluetoothctl scan on
-bluetoothctl devices
-```
-
-Найдите MAC нужного телефона и добавьте его в базу.
-
----
-
-# 12. Проверка реле
-
-Перед запуском BLE-логики нужно проверить реле отдельно:
-
-```bash
-/opt/barrier/venv/bin/python /opt/barrier/barrier_service.py test-open
-```
-
-Если реле не сработало, проверьте:
-
-* правильный `relay_port`;
-* правильный `relay_baudrate`;
-* права доступа к `/dev/ttyUSB0`;
-* питание реле;
-* команды конкретного релейного модуля.
-
----
-
-# 13. Ручной запуск основного сервиса
-
-```bash
-/opt/barrier/venv/bin/python /opt/barrier/barrier_service.py run
-```
-
-Что делает сервис:
-
-* запускает `bluetoothctl`;
-* постоянно отправляет `scan on`;
-* получает список найденных устройств;
-* сравнивает найденные MAC с базой;
-* при обнаружении разрешённого устройства даёт команду на открытие;
-* при исчезновении устройства через заданное количество циклов даёт команду на закрытие.
-
-Остановка:
-
-```text
-Ctrl+C
-```
-
----
-
-# 14. Ручной запуск web-панели
-
-```bash
-/opt/barrier/venv/bin/python /opt/barrier/panel.py
-```
-
-Обычно панель доступна на порту `8080`.
-
----
-
-# 15. Автозапуск web-панели через systemd
-
-Создайте файл:
-
-```bash
-sudo nano /etc/systemd/system/barrier-panel.service
-```
-
-Содержимое:
-
-```ini
-[Unit]
-Description=Barrier Web Panel
-After=network.target
-
-[Service]
-User=ltpibarrier
-WorkingDirectory=/opt/barrier
-ExecStart=/opt/barrier/venv/bin/python /opt/barrier/panel.py
-Restart=always
-RestartSec=3
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Применить:
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable barrier-panel.service
-sudo systemctl start barrier-panel.service
-```
-
-Проверка:
-
-```bash
-sudo systemctl status barrier-panel.service
-```
-
-Логи:
-
-```bash
-journalctl -u barrier-panel.service -f
-```
-
----
-
-# 16. Автозапуск основного BLE-сервиса через systemd
-
-Создайте файл:
-
-```bash
-sudo nano /etc/systemd/system/barrier.service
-```
-
-Содержимое:
-
-```ini
-[Unit]
-Description=Barrier BLE Service
-After=network.target bluetooth.service
-Wants=bluetooth.service
-
-[Service]
-User=ltpibarrier
-WorkingDirectory=/opt/barrier
-ExecStart=/opt/barrier/venv/bin/python /opt/barrier/barrier_service.py run
-Restart=always
-RestartSec=3
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Применить:
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable barrier.service
-sudo systemctl start barrier.service
-```
-
-Проверка:
+Основной сервис:
 
 ```bash
 sudo systemctl status barrier.service
+sudo systemctl restart barrier.service
+sudo systemctl stop barrier.service
+```
+
+Web-панель:
+
+```bash
+sudo systemctl status barrier-panel.service
+sudo systemctl restart barrier-panel.service
+sudo systemctl stop barrier-panel.service
+```
+
+Включить автозапуск:
+
+```bash
+sudo systemctl enable bluetooth
+sudo systemctl enable barrier.service
+sudo systemctl enable barrier-panel.service
 ```
 
 Логи:
 
 ```bash
 journalctl -u barrier.service -f
+journalctl -u barrier-panel.service -f
 ```
 
----
+## Обновление
 
-# 17. Доступ к web-панели
+Если проект установлен через `install.sh`, обновить код можно повторным запуском:
 
-Узнать IP-адрес одноплатника:
+```bash
+cd /tmp/barrier
+git pull
+sudo bash install.sh
+```
+
+Или вручную:
+
+```bash
+cd /opt/barrier/src
+git pull
+sudo systemctl restart barrier.service barrier-panel.service
+```
+
+## Тесты
+
+На машине разработчика:
+
+```bash
+python -m unittest discover -s tests
+```
+
+Проверка синтаксиса:
+
+```bash
+python -m py_compile barrier_config.py barrier_types.py barrier_db.py barrier_presence.py barrier_bluetooth.py barrier_relay.py barrier_service.py panel.py tests/test_presence.py
+```
+
+Тесты не требуют Raspberry Pi, Bluetooth или реле. Они проверяют чистую логику presence-состояний.
+
+## Минимальный сценарий после установки
+
+```bash
+PY=/opt/barrier/venv/bin/python
+APP=/opt/barrier/src/barrier_service.py
+
+$PY $APP init-db
+$PY $APP add AA:BB:CC:DD:EE:FF "My Phone"
+$PY $APP detect-relay
+$PY $APP --dry-run test-open
+$PY $APP test-open
+
+sudo systemctl restart barrier.service barrier-panel.service
+```
+
+После этого открыть:
+
+```text
+http://IP_УСТРОЙСТВА:8080
+```
+
+## Диагностика
+
+Проверить IP:
 
 ```bash
 hostname -I
+ip a
 ```
 
-Открыть в телефоне:
+Проверить Bluetooth:
 
-```text
-http://IP_ОДНОПЛАТНИКА:8080
+```bash
+bluetoothctl show
+timeout 15s bluetoothctl scan on
+bluetoothctl devices
 ```
 
-Пример:
+Проверить serial-порт:
 
-```text
-http://10.44.229.120:8080
+```bash
+ls -l /dev/ttyUSB* /dev/ttyACM* 2>/dev/null
+/opt/barrier/venv/bin/python /opt/barrier/src/barrier_service.py detect-relay
 ```
 
-Важно:
+Проверить сервисы:
 
-* телефон должен быть в той же Wi-Fi сети, что и одноплатник;
-* если web-панель не открывается, проверьте порт `8080`.
+```bash
+sudo systemctl status barrier.service
+sudo systemctl status barrier-panel.service
+```
 
----
-
-# 18. Проверка, что web-панель действительно слушает порт
+Проверить порт web-панели:
 
 ```bash
 ss -tulpn | grep 8080
 ```
 
-Если порт не слушается, смотрите лог сервиса:
+Посмотреть последние логи:
 
 ```bash
-journalctl -u barrier-panel.service -f
+journalctl -u barrier.service -n 100
+journalctl -u barrier-panel.service -n 100
 ```
 
----
+## Частые проблемы
 
-# 19. Минимальный сценарий запуска после установки
-
-Выполните по порядку:
-
-```bash
-sudo systemctl enable bluetooth
-sudo systemctl start bluetooth
-
-/opt/barrier/venv/bin/python /opt/barrier/barrier_service.py init-db
-/opt/barrier/venv/bin/python /opt/barrier/barrier_service.py add AA:BB:CC:DD:EE:FF "My Phone"
-/opt/barrier/venv/bin/python /opt/barrier/barrier_service.py test-open
-
-sudo systemctl daemon-reload
-sudo systemctl enable barrier.service barrier-panel.service
-sudo systemctl start barrier.service barrier-panel.service
-```
-
-После этого:
-
-* BLE-сервис работает автоматически;
-* web-панель запускается автоматически;
-* доступ с телефона идёт через браузер.
-
----
-
-# 20. Основные команды управления
-
-Инициализация базы:
-
-```bash
-/opt/barrier/venv/bin/python /opt/barrier/barrier_service.py init-db
-```
-
-Добавить устройство:
-
-```bash
-/opt/barrier/venv/bin/python /opt/barrier/barrier_service.py add AA:BB:CC:DD:EE:FF "Phone"
-```
-
-Показать список:
-
-```bash
-/opt/barrier/venv/bin/python /opt/barrier/barrier_service.py list
-```
-
-Отключить устройство:
-
-```bash
-/opt/barrier/venv/bin/python /opt/barrier/barrier_service.py disable AA:BB:CC:DD:EE:FF
-```
-
-Включить устройство:
-
-```bash
-/opt/barrier/venv/bin/python /opt/barrier/barrier_service.py enable AA:BB:CC:DD:EE:FF
-```
-
-Удалить устройство:
-
-```bash
-/opt/barrier/venv/bin/python /opt/barrier/barrier_service.py remove AA:BB:CC:DD:EE:FF
-```
-
-Тест открытия:
-
-```bash
-/opt/barrier/venv/bin/python /opt/barrier/barrier_service.py test-open
-```
-
-Ручной запуск:
-
-```bash
-/opt/barrier/venv/bin/python /opt/barrier/barrier_service.py run
-```
-
----
-
-# 21. Быстрая диагностика
-
-## 21.1 Проверка IP
-
-```bash
-ip a
-hostname -I
-```
-
-## 21.2 Проверка Bluetooth
-
-```bash
-bluetoothctl show
-```
-
-## 21.3 Проверка видимых устройств
-
-```bash
-timeout 15s bluetoothctl scan on
-bluetoothctl devices
-```
-
-## 21.4 Проверка реле
-
-```bash
-/opt/barrier/venv/bin/python /opt/barrier/barrier_service.py test-open
-```
-
-## 21.5 Проверка сервисов
-
-```bash
-sudo systemctl status barrier.service
-sudo systemctl status barrier-panel.service
-```
-
-## 21.6 Логи
-
-```bash
-journalctl -u barrier.service -f
-journalctl -u barrier-panel.service -f
-```
-
----
-
-# 22. Частые проблемы и решения
-
-## Проблема: web-панель не открывается
+### Web-панель не открывается
 
 Проверьте:
 
-* запущен ли `barrier-panel.service`;
-* слушает ли приложение порт `8080`;
-* подключён ли телефон к той же Wi-Fi сети.
+- Raspberry Pi и телефон в одной сети;
+- `barrier-panel.service` запущен;
+- порт `8080` слушается;
+- firewall не блокирует порт.
 
 Команды:
 
@@ -557,16 +554,30 @@ ss -tulpn | grep 8080
 hostname -I
 ```
 
----
+### Пароль не принимается
 
-## Проблема: Bluetooth не видит телефон
+Проверьте значение переменной:
+
+```bash
+sudo systemctl cat barrier-panel.service
+```
+
+После изменения пароля нужен restart:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart barrier-panel.service
+```
+
+### Bluetooth не видит телефон
 
 Проверьте:
 
-* включён ли Bluetooth на телефоне;
-* не спит ли телефон;
-* не меняется ли MAC из-за рандомизации;
-* работает ли `bluetoothctl scan on`.
+- Bluetooth включен на телефоне;
+- телефон не спит;
+- телефон видим для Bluetooth;
+- MAC не меняется из-за приватного адреса;
+- `bluetoothctl scan on` реально видит устройства.
 
 Команды:
 
@@ -576,56 +587,54 @@ timeout 20s bluetoothctl scan on
 bluetoothctl devices
 ```
 
----
-
-## Проблема: сервис не запускается через systemd
+### Реле не срабатывает
 
 Проверьте:
 
-* правильный путь к Python:
-  `/opt/barrier/venv/bin/python`
-* правильный `WorkingDirectory`;
-* права пользователя;
-* установлены ли зависимости.
-
-Лог:
-
-```bash
-journalctl -u barrier.service -n 100
-journalctl -u barrier-panel.service -n 100
-```
-
----
-
-## Проблема: реле не срабатывает
-
-Проверьте:
-
-* верный ли serial-порт;
-* верная ли скорость порта;
-* есть ли доступ к `ttyUSB`;
-* соответствуют ли команды вашему релейному модулю.
+- правильный serial-порт;
+- права доступа к `/dev/ttyUSB0` или `/dev/ttyACM0`;
+- пользователь входит в группу `dialout`;
+- реле получает питание;
+- команды `relay_on_cmd` и `relay_off_cmd` подходят вашему модулю.
 
 Команды:
 
 ```bash
-ls -l /dev/ttyUSB* /dev/ttyACM* 2>/dev/null
 groups
+ls -l /dev/ttyUSB* /dev/ttyACM* 2>/dev/null
+/opt/barrier/venv/bin/python /opt/barrier/src/barrier_service.py --dry-run test-open
+/opt/barrier/venv/bin/python /opt/barrier/src/barrier_service.py test-open
 ```
 
----
+### BLE-сервис не стартует
 
-## Проблема: после перезагрузки всё не стартует
+Проверьте:
 
-Проверьте, что сервисы включены:
+- база инициализирована;
+- добавлен хотя бы один enabled MAC;
+- Bluetooth работает;
+- реле доступно или включен dry-run.
+
+Команды:
 
 ```bash
-sudo systemctl is-enabled barrier.service
-sudo systemctl is-enabled barrier-panel.service
-sudo systemctl is-enabled bluetooth
+/opt/barrier/venv/bin/python /opt/barrier/src/barrier_service.py list
+sudo systemctl status bluetooth
+sudo systemctl status barrier.service
+journalctl -u barrier.service -n 100
 ```
 
-Если нет:
+### После перезагрузки ничего не запускается
+
+Проверьте автозапуск:
+
+```bash
+sudo systemctl is-enabled bluetooth
+sudo systemctl is-enabled barrier.service
+sudo systemctl is-enabled barrier-panel.service
+```
+
+Включить:
 
 ```bash
 sudo systemctl enable bluetooth
@@ -633,87 +642,22 @@ sudo systemctl enable barrier.service
 sudo systemctl enable barrier-panel.service
 ```
 
----
+## Безопасность
 
-# 23. Рекомендации для демонстрации
+Минимум для реального использования:
 
-Если нужно показать систему быстро:
+- задать `BARRIER_PANEL_PASSWORD`;
+- задать уникальный `BARRIER_FLASK_SECRET_KEY`;
+- не открывать порт панели в интернет;
+- держать панель только в локальной сети;
+- регулярно делать backup базы;
+- проверить, что serial-реле не может сработать от случайной команды.
 
-* не поднимайте отдельную Wi-Fi точку доступа;
-* используйте уже существующую Wi-Fi сеть;
-* подключите телефон и Raspberry Pi к одной сети;
-* откройте web-панель по текущему IP одноплатника.
+## Что можно улучшить дальше
 
-Пример:
-
-```text
-http://10.44.229.120:8080
-```
-
----
-
-# 24. Рекомендации для продакшена
-
-Желательно добавить:
-
-* watchdog;
-* логирование событий в базу;
-* фильтрацию по RSSI;
-* резервный способ открытия шлагбаума;
-* защиту web-панели паролем;
-* резервное питание;
-* отдельную сервисную кнопку.
-
----
-
-# 25. Пример полной установки одной последовательностью
-
-```bash
-sudo apt update
-sudo apt install -y python3 python3-pip python3-venv bluetooth bluez sqlite3
-
-sudo mkdir -p /opt/barrier
-sudo chown -R $USER:$USER /opt/barrier
-
-cd /opt/barrier
-python3 -m venv venv
-source /opt/barrier/venv/bin/activate
-pip install --upgrade pip
-pip install pyserial flask
-
-chmod +x /opt/barrier/barrier_service.py
-chmod +x /opt/barrier/panel.py
-
-sudo systemctl enable bluetooth
-sudo systemctl start bluetooth
-
-/opt/barrier/venv/bin/python /opt/barrier/barrier_service.py init-db
-/opt/barrier/venv/bin/python /opt/barrier/barrier_service.py add AA:BB:CC:DD:EE:FF "My Phone"
-/opt/barrier/venv/bin/python /opt/barrier/barrier_service.py test-open
-```
-
-Дальше создать два systemd-сервиса из разделов выше и запустить:
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable barrier.service barrier-panel.service
-sudo systemctl start barrier.service barrier-panel.service
-```
-
----
-
-# 26. Что открывать с телефона
-
-1. Подключить телефон к той же Wi-Fi сети.
-2. Узнать IP одноплатника:
-
-```bash
-hostname -I
-```
-
-3. Открыть в браузере:
-
-```text
-http://IP_ОДНОПЛАТНИКА:8080
-```
-
+- Фильтрация по RSSI, чтобы учитывать расстояние до телефона.
+- Отдельный аварийный способ открытия.
+- Экспорт журнала событий.
+- Watchdog здоровья Bluetooth.
+- Более строгая авторизация web-панели с пользователями.
+- Настройки через отдельный `/etc/barrier/barrier.env`.
