@@ -28,6 +28,7 @@ barrier_relay.py        Serial-реле, dry-run, автоопределение
 barrier_presence.py     Логика присутствия устройства
 barrier_types.py        Общие типы и состояние
 install.sh              Установка на Raspberry Pi/Linux через systemd
+scripts/                Сервисные shell-скрипты
 .env.example            Пример переменных окружения
 tests/                  Unit-тесты
 archive/                Старые файлы и production-снимки, не используемые текущей версией
@@ -74,6 +75,7 @@ sudo bash install.sh
 - создаст virtualenv в `/opt/barrier/venv`;
 - установит `pyserial` и `flask`;
 - создаст systemd-сервисы;
+- создаст Bluetooth watchdog timer;
 - инициализирует SQLite-базу;
 - запустит web-панель;
 - попробует запустить BLE-сервис.
@@ -404,6 +406,45 @@ default-agent
 quit
 ```
 
+## Bluetooth watchdog
+
+Watchdog вынесен в отдельный systemd timer и не нагружает основной Python-сервис.
+
+Что он делает:
+
+- раз в минуту запускает `scripts/bluetooth_watchdog.sh`;
+- проверяет `bluetoothctl show`;
+- если Bluetooth не в состоянии `Powered: yes` и `PowerState: on`, пробует восстановить адаптер;
+- выполняет `rfkill unblock bluetooth`;
+- перезапускает `bluetooth.service`;
+- включает питание через `bluetoothctl power on`;
+- после успешного восстановления перезапускает `barrier.service`.
+
+Проверить timer:
+
+```bash
+sudo systemctl status barrier-bluetooth-watchdog.timer
+systemctl list-timers | grep barrier-bluetooth-watchdog
+```
+
+Запустить watchdog вручную:
+
+```bash
+sudo systemctl start barrier-bluetooth-watchdog.service
+```
+
+Посмотреть логи:
+
+```bash
+journalctl -u barrier-bluetooth-watchdog.service -n 80 --no-pager
+```
+
+Отключить watchdog:
+
+```bash
+sudo systemctl disable --now barrier-bluetooth-watchdog.timer
+```
+
 ## Реле
 
 Посмотреть доступные serial-порты:
@@ -468,6 +509,7 @@ sudo systemctl stop barrier-panel.service
 sudo systemctl enable bluetooth
 sudo systemctl enable barrier.service
 sudo systemctl enable barrier-panel.service
+sudo systemctl enable barrier-bluetooth-watchdog.timer
 ```
 
 Логи:
@@ -475,6 +517,7 @@ sudo systemctl enable barrier-panel.service
 ```bash
 journalctl -u barrier.service -f
 journalctl -u barrier-panel.service -f
+journalctl -u barrier-bluetooth-watchdog.service -f
 ```
 
 ## Обновление
@@ -561,6 +604,7 @@ ls -l /dev/ttyUSB* /dev/ttyACM* 2>/dev/null
 ```bash
 sudo systemctl status barrier.service
 sudo systemctl status barrier-panel.service
+sudo systemctl status barrier-bluetooth-watchdog.timer
 ```
 
 Проверить порт web-панели:
@@ -727,6 +771,7 @@ journalctl -u barrier.service -n 100
 sudo systemctl is-enabled bluetooth
 sudo systemctl is-enabled barrier.service
 sudo systemctl is-enabled barrier-panel.service
+sudo systemctl is-enabled barrier-bluetooth-watchdog.timer
 ```
 
 Включить:
@@ -735,6 +780,7 @@ sudo systemctl is-enabled barrier-panel.service
 sudo systemctl enable bluetooth
 sudo systemctl enable barrier.service
 sudo systemctl enable barrier-panel.service
+sudo systemctl enable barrier-bluetooth-watchdog.timer
 ```
 
 ## Безопасность
@@ -753,6 +799,5 @@ sudo systemctl enable barrier-panel.service
 - Фильтрация по RSSI, чтобы учитывать расстояние до телефона.
 - Отдельный аварийный способ открытия.
 - Экспорт журнала событий.
-- Watchdog здоровья Bluetooth.
 - Более строгая авторизация web-панели с пользователями.
 - Настройки через отдельный `/etc/barrier/barrier.env`.

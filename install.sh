@@ -16,9 +16,13 @@ VENV_PYTHON="${VENV_DIR}/bin/python"
 
 BARRIER_SERVICE_NAME="barrier.service"
 PANEL_SERVICE_NAME="barrier-panel.service"
+WATCHDOG_SERVICE_NAME="barrier-bluetooth-watchdog.service"
+WATCHDOG_TIMER_NAME="barrier-bluetooth-watchdog.timer"
 
 BARRIER_SERVICE_FILE="/etc/systemd/system/${BARRIER_SERVICE_NAME}"
 PANEL_SERVICE_FILE="/etc/systemd/system/${PANEL_SERVICE_NAME}"
+WATCHDOG_SERVICE_FILE="/etc/systemd/system/${WATCHDOG_SERVICE_NAME}"
+WATCHDOG_TIMER_FILE="/etc/systemd/system/${WATCHDOG_TIMER_NAME}"
 
 log() {
   echo "[INFO] $*"
@@ -69,7 +73,7 @@ fetch_repo() {
 check_repo_files() {
   local missing=0
 
-  for f in barrier_service.py panel.py; do
+  for f in barrier_service.py panel.py scripts/bluetooth_watchdog.sh; do
     if [[ ! -f "${SRC_DIR}/${f}" ]]; then
       err "Не найден файл ${SRC_DIR}/${f}"
       missing=1
@@ -89,6 +93,11 @@ create_compat_symlinks() {
   chown -h "${SERVICE_USER}:${SERVICE_GROUP}" \
     "${APP_DIR}/barrier_service.py" \
     "${APP_DIR}/panel.py" || true
+}
+
+prepare_scripts() {
+  log "Настраиваю исполняемые скрипты"
+  chmod +x "${SRC_DIR}/scripts/bluetooth_watchdog.sh"
 }
 
 create_venv() {
@@ -177,6 +186,34 @@ WantedBy=multi-user.target
 EOF
 }
 
+write_watchdog_units() {
+  log "Создаю unit ${WATCHDOG_SERVICE_NAME}"
+  cat > "$WATCHDOG_SERVICE_FILE" <<EOF
+[Unit]
+Description=Barrier Bluetooth Watchdog
+After=bluetooth.service
+
+[Service]
+Type=oneshot
+ExecStart=${SRC_DIR}/scripts/bluetooth_watchdog.sh
+EOF
+
+  log "Создаю timer ${WATCHDOG_TIMER_NAME}"
+  cat > "$WATCHDOG_TIMER_FILE" <<EOF
+[Unit]
+Description=Run Barrier Bluetooth Watchdog periodically
+
+[Timer]
+OnBootSec=30
+OnUnitActiveSec=60
+AccuracySec=10
+Unit=${WATCHDOG_SERVICE_NAME}
+
+[Install]
+WantedBy=timers.target
+EOF
+}
+
 enable_and_start_services() {
   log "Перечитываю systemd"
   systemctl daemon-reload
@@ -184,9 +221,13 @@ enable_and_start_services() {
   log "Включаю автозапуск сервисов"
   systemctl enable "${BARRIER_SERVICE_NAME}"
   systemctl enable "${PANEL_SERVICE_NAME}"
+  systemctl enable "${WATCHDOG_TIMER_NAME}"
 
   log "Запускаю web-панель"
   systemctl restart "${PANEL_SERVICE_NAME}"
+
+  log "Запускаю Bluetooth watchdog timer"
+  systemctl restart "${WATCHDOG_TIMER_NAME}"
 
   log "Пробую запустить BLE-сервис"
   systemctl restart "${BARRIER_SERVICE_NAME}" || warn "BLE-сервис не стартовал. Возможно, ещё не добавлены MAC или не подключено реле."
@@ -214,10 +255,12 @@ Virtualenv:
 Сервисы:
   sudo systemctl status ${BARRIER_SERVICE_NAME}
   sudo systemctl status ${PANEL_SERVICE_NAME}
+  sudo systemctl status ${WATCHDOG_TIMER_NAME}
 
 Логи:
   journalctl -u ${BARRIER_SERVICE_NAME} -f
   journalctl -u ${PANEL_SERVICE_NAME} -f
+  journalctl -u ${WATCHDOG_SERVICE_NAME} -f
 
 Web-панель:
   http://<IP_ОДНОПЛАТНИКА>:8080
@@ -238,12 +281,14 @@ main() {
   fetch_repo
   check_repo_files
   create_compat_symlinks
+  prepare_scripts
   create_venv
   enable_bluetooth
   grant_serial_access
   init_database
   write_barrier_service
   write_panel_service
+  write_watchdog_units
   enable_and_start_services
   show_summary
 }
