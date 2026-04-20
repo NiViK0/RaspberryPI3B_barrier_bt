@@ -1,5 +1,32 @@
 # Barrier BLE Controller on Raspberry Pi
 
+## Быстрое обновление: конфигурация через env
+
+Основные настройки теперь можно задавать переменными окружения, не меняя Python-код. Пример лежит в `.env.example`.
+
+Часто используемые переменные:
+
+```bash
+BARRIER_DB_PATH=/opt/barrier/barrier.db
+BARRIER_BACKUP_DIR=/opt/barrier/backups
+BARRIER_SCRIPT=/opt/barrier/src/barrier_service.py
+BARRIER_RELAY_PORT=/dev/ttyUSB0
+BARRIER_RELAY_PORT=auto
+BARRIER_DRY_RUN=false
+BARRIER_PANEL_PASSWORD=strong-password
+BARRIER_PANEL_PORT=8080
+```
+
+Новые команды:
+
+```bash
+/opt/barrier/venv/bin/python /opt/barrier/src/barrier_service.py detect-relay
+/opt/barrier/venv/bin/python /opt/barrier/src/barrier_service.py backup-db
+/opt/barrier/venv/bin/python /opt/barrier/src/barrier_service.py --dry-run test-open
+```
+
+Если `BARRIER_PANEL_PASSWORD` пустой, web-панель работает без пароля. Если переменная задана, панель требует вход.
+
 Система для управления шлагбаумом на одноплатном компьютере через Bluetooth Low Energy.
 
 Что умеет:

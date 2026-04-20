@@ -123,6 +123,8 @@ User=${SERVICE_USER}
 Group=${SERVICE_GROUP}
 WorkingDirectory=${SRC_DIR}
 ExecStart=${VENV_PYTHON} ${SRC_DIR}/barrier_service.py run
+Environment=BARRIER_DB_PATH=${APP_DIR}/barrier.db
+Environment=BARRIER_BACKUP_DIR=${APP_DIR}/backups
 Restart=always
 RestartSec=3
 
@@ -144,6 +146,9 @@ User=${SERVICE_USER}
 Group=${SERVICE_GROUP}
 WorkingDirectory=${SRC_DIR}
 ExecStart=${VENV_PYTHON} ${SRC_DIR}/panel.py
+Environment=BARRIER_DB_PATH=${APP_DIR}/barrier.db
+Environment=BARRIER_BACKUP_DIR=${APP_DIR}/backups
+Environment=BARRIER_SCRIPT=${SRC_DIR}/barrier_service.py
 Restart=always
 RestartSec=3
 
