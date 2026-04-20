@@ -209,6 +209,12 @@ $PY $APP remove AA:BB:CC:DD:EE:FF
 $PY $APP test-open
 ```
 
+Открыть шлагбаум вручную:
+
+```bash
+$PY $APP manual-open
+```
+
 Тест без реального реле:
 
 ```bash
@@ -265,6 +271,7 @@ hostname -I
 - добавление устройства;
 - включение и отключение устройства;
 - удаление устройства;
+- ручное открытие шлагбаума;
 - тестовое открытие;
 - restart Bluetooth;
 - backup базы;
@@ -418,6 +425,12 @@ sudo usermod -aG dialout $USER
 
 ```bash
 /opt/barrier/venv/bin/python /opt/barrier/src/barrier_service.py test-open
+```
+
+Ручное открытие:
+
+```bash
+/opt/barrier/venv/bin/python /opt/barrier/src/barrier_service.py manual-open
 ```
 
 Безопасный тест без реле:

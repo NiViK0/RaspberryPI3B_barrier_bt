@@ -100,7 +100,7 @@ def cmd_remove(config: Config, mac: str) -> None:
         sys.exit(1)
 
 
-def cmd_test_open(config: Config) -> None:
+def pulse_relay_once(config: Config) -> None:
     init_db(config.db_path)
     try:
         with RelayController(config) as relay:
@@ -108,8 +108,18 @@ def cmd_test_open(config: Config) -> None:
     except SerialDependencyError as exc:
         print(exc)
         sys.exit(1)
+
+
+def cmd_test_open(config: Config) -> None:
+    pulse_relay_once(config)
     log_db_event(config, "INFO", "cli", "relay-test", "Тестовый импульс на реле отправлен")
     print("Тестовый импульс на реле отправлен")
+
+
+def cmd_manual_open(config: Config) -> None:
+    pulse_relay_once(config)
+    log_db_event(config, "INFO", "cli", "manual-open", "Шлагбаум открыт вручную")
+    print("Шлагбаум открыт вручную")
 
 
 def cmd_detect_relay(config: Config) -> None:
@@ -231,6 +241,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_test_open = subparsers.add_parser("test-open", help="Тестовый импульс на реле")
     p_test_open.set_defaults(handler=lambda config, args: cmd_test_open(config))
+
+    p_manual_open = subparsers.add_parser("manual-open", help="Открыть шлагбаум вручную")
+    p_manual_open.set_defaults(handler=lambda config, args: cmd_manual_open(config))
 
     p_detect_relay = subparsers.add_parser("detect-relay", help="Найти serial-порт реле")
     p_detect_relay.set_defaults(handler=lambda config, args: cmd_detect_relay(config))

@@ -64,6 +64,9 @@ HTML = """
 
   <div class="card">
     <h2>Быстрые действия</h2>
+    <form method="post" action="{{ url_for('manual_open') }}">
+      <button type="submit">Открыть вручную</button>
+    </form>
     <form method="post" action="{{ url_for('test_open') }}">
       <button type="submit">Открыть шлагбаум (тест)</button>
     </form>
@@ -314,6 +317,13 @@ def remove_device(mac: str):
 def test_open():
     log_panel_event("relay-test-request", "Запрос тестового открытия")
     return run_and_redirect(["test-open"])
+
+
+@app.route("/manual-open", methods=["POST"])
+@login_required
+def manual_open():
+    log_panel_event("manual-open-request", "Запрос ручного открытия")
+    return run_and_redirect(["manual-open"], "Шлагбаум открыт вручную")
 
 
 @app.route("/backup-db", methods=["POST"])
