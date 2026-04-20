@@ -73,7 +73,7 @@ fetch_repo() {
 check_repo_files() {
   local missing=0
 
-  for f in barrier_service.py panel.py scripts/bluetooth_watchdog.sh; do
+  for f in barrier_service.py panel.py scripts/bluetooth_watchdog.sh scripts/barrier_open.sh; do
     if [[ ! -f "${SRC_DIR}/${f}" ]]; then
       err "Не найден файл ${SRC_DIR}/${f}"
       missing=1
@@ -98,6 +98,12 @@ create_compat_symlinks() {
 prepare_scripts() {
   log "Настраиваю исполняемые скрипты"
   chmod +x "${SRC_DIR}/scripts/bluetooth_watchdog.sh"
+  chmod +x "${SRC_DIR}/scripts/barrier_open.sh"
+}
+
+install_emergency_open_wrapper() {
+  log "Устанавливаю аварийную команду /usr/local/bin/barrier-open"
+  install -m 0755 "${SRC_DIR}/scripts/barrier_open.sh" /usr/local/bin/barrier-open
 }
 
 create_venv() {
@@ -251,6 +257,7 @@ Virtualenv:
   ${VENV_PYTHON} ${SRC_DIR}/barrier_service.py add AA:BB:CC:DD:EE:FF "My Phone"
   ${VENV_PYTHON} ${SRC_DIR}/barrier_service.py list
   ${VENV_PYTHON} ${SRC_DIR}/barrier_service.py test-open
+  barrier-open
 
 Сервисы:
   sudo systemctl status ${BARRIER_SERVICE_NAME}
@@ -283,6 +290,7 @@ main() {
   create_compat_symlinks
   prepare_scripts
   create_venv
+  install_emergency_open_wrapper
   enable_bluetooth
   grant_serial_access
   init_database

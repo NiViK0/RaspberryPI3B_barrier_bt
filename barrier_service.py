@@ -122,6 +122,12 @@ def cmd_manual_open(config: Config) -> None:
     print("Шлагбаум открыт вручную")
 
 
+def cmd_emergency_open(config: Config) -> None:
+    pulse_relay_once(config)
+    log_db_event(config, "WARN", "cli", "emergency-open", "Аварийное открытие шлагбаума")
+    print("Аварийное открытие шлагбаума выполнено")
+
+
 def cmd_detect_relay(config: Config) -> None:
     port = detect_relay_port()
     if port is None:
@@ -244,6 +250,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_manual_open = subparsers.add_parser("manual-open", help="Открыть шлагбаум вручную")
     p_manual_open.set_defaults(handler=lambda config, args: cmd_manual_open(config))
+
+    p_emergency_open = subparsers.add_parser("emergency-open", help="Аварийно открыть шлагбаум")
+    p_emergency_open.set_defaults(handler=lambda config, args: cmd_emergency_open(config))
 
     p_detect_relay = subparsers.add_parser("detect-relay", help="Найти serial-порт реле")
     p_detect_relay.set_defaults(handler=lambda config, args: cmd_detect_relay(config))

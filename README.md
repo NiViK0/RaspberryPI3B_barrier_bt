@@ -220,6 +220,18 @@ $PY $APP test-open
 $PY $APP manual-open
 ```
 
+Аварийное открытие:
+
+```bash
+$PY $APP emergency-open
+```
+
+После установки через `install.sh` доступна короткая команда:
+
+```bash
+barrier-open
+```
+
 Тест без реального реле:
 
 ```bash
@@ -445,6 +457,43 @@ journalctl -u barrier-bluetooth-watchdog.service -n 80 --no-pager
 sudo systemctl disable --now barrier-bluetooth-watchdog.timer
 ```
 
+## Аварийное открытие
+
+Аварийное открытие сделано отдельным способом и не смешано с BLE-логикой основного сервиса.
+
+Доступны два варианта:
+
+```bash
+/opt/barrier/venv/bin/python /opt/barrier/src/barrier_service.py emergency-open
+```
+
+и короткая команда после установки:
+
+```bash
+barrier-open
+```
+
+`barrier-open` устанавливается в `/usr/local/bin/barrier-open` и вызывает:
+
+```bash
+/opt/barrier/venv/bin/python /opt/barrier/src/barrier_service.py emergency-open
+```
+
+Событие пишется в SQLite-журнал как:
+
+```text
+emergency-open
+```
+
+Проверить:
+
+```bash
+barrier-open
+journalctl -u barrier.service -n 80 --no-pager
+```
+
+Если команда нужна пользователю без интерактивного shell-доступа, можно позже добавить отдельное правило `sudoers` или физическую GPIO-кнопку отдельным сервисом.
+
 ## Реле
 
 Посмотреть доступные serial-порты:
@@ -477,6 +526,13 @@ sudo usermod -aG dialout $USER
 
 ```bash
 /opt/barrier/venv/bin/python /opt/barrier/src/barrier_service.py manual-open
+```
+
+Аварийное открытие:
+
+```bash
+/opt/barrier/venv/bin/python /opt/barrier/src/barrier_service.py emergency-open
+barrier-open
 ```
 
 Безопасный тест без реле:
