@@ -347,6 +347,29 @@ barrier-20260420-153000.db
 bluetoothctl show
 ```
 
+Рабочее состояние должно выглядеть так:
+
+```text
+Powered: yes
+PowerState: on
+```
+
+Если видно `Powered: no` и `PowerState: off-blocked`, Bluetooth заблокирован через `rfkill` и сервис не сможет сканировать устройства. Разблокировать:
+
+```bash
+sudo rfkill list
+sudo rfkill unblock bluetooth
+sudo systemctl restart bluetooth
+bluetoothctl power on
+bluetoothctl show
+```
+
+После восстановления Bluetooth перезапустить сервис:
+
+```bash
+sudo systemctl restart barrier.service
+```
+
 Ручное сканирование:
 
 ```bash
@@ -585,6 +608,30 @@ sudo systemctl restart barrier-panel.service
 bluetoothctl show
 timeout 20s bluetoothctl scan on
 bluetoothctl devices
+```
+
+Если `bluetoothctl show` показывает:
+
+```text
+Powered: no
+PowerState: off-blocked
+```
+
+разблокируйте адаптер и перезапустите сервис:
+
+```bash
+sudo rfkill list
+sudo rfkill unblock bluetooth
+sudo systemctl restart bluetooth
+bluetoothctl power on
+sudo systemctl restart barrier.service
+```
+
+Проверка после исправления:
+
+```bash
+bluetoothctl show
+journalctl -u barrier.service -n 80 --no-pager
 ```
 
 ### Реле не срабатывает
