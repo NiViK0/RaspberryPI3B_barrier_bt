@@ -3,6 +3,8 @@ set -Eeuo pipefail
 
 REPO_URL="https://github.com/NiViK0/RaspberryPI3B_barrier_bt.git"
 BRANCH="${BRANCH:-main}"
+INSTALL_FROM_LOCAL="${INSTALL_FROM_LOCAL:-false}"
+LOCAL_SOURCE_DIR="${LOCAL_SOURCE_DIR:-}"
 
 APP_DIR="/opt/barrier"
 SRC_DIR="${APP_DIR}/src"
@@ -59,6 +61,15 @@ prepare_dirs() {
 }
 
 fetch_repo() {
+  if [[ "$INSTALL_FROM_LOCAL" == "1" || "$INSTALL_FROM_LOCAL" == "true" ]]; then
+    local source_dir="${LOCAL_SOURCE_DIR:-$(pwd)}"
+    log "Копирую локальные исходники из ${source_dir} в ${SRC_DIR}"
+    mkdir -p "$SRC_DIR"
+    cp -a "${source_dir}/." "$SRC_DIR/"
+    chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "$SRC_DIR"
+    return
+  fi
+
   if [[ -d "${SRC_DIR}/.git" ]]; then
     log "Репозиторий уже существует, обновляю"
     sudo -u "$SERVICE_USER" git -C "$SRC_DIR" fetch --all --prune
@@ -73,7 +84,7 @@ fetch_repo() {
 check_repo_files() {
   local missing=0
 
-  for f in barrier_service.py panel.py scripts/bluetooth_watchdog.sh scripts/barrier_open.sh; do
+  for f in barrier_service.py panel.py scripts/bluetooth_watchdog.sh scripts/barrier_open.sh scripts/setup_wifi_ap.sh; do
     if [[ ! -f "${SRC_DIR}/${f}" ]]; then
       err "Не найден файл ${SRC_DIR}/${f}"
       missing=1
@@ -99,6 +110,7 @@ prepare_scripts() {
   log "Настраиваю исполняемые скрипты"
   chmod +x "${SRC_DIR}/scripts/bluetooth_watchdog.sh"
   chmod +x "${SRC_DIR}/scripts/barrier_open.sh"
+  chmod +x "${SRC_DIR}/scripts/setup_wifi_ap.sh"
 }
 
 install_emergency_open_wrapper() {
