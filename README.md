@@ -82,6 +82,27 @@ sudo bash install.sh
 
 Если BLE-сервис не стартует сразу, это нормально: сначала может понадобиться добавить MAC-адрес телефона и проверить реле.
 
+### Установка локальной копии
+
+Если изменения еще не отправлены в GitHub, можно установить именно текущую локальную копию проекта. На компьютере с проектом соберите архив и передайте его на Raspberry Pi:
+
+```bash
+tar --exclude .git -czf barrier-deploy.tar.gz .
+scp barrier-deploy.tar.gz ltpibarrier@IP_ПЛАТЫ:/tmp/barrier-deploy.tar.gz
+```
+
+На Raspberry Pi:
+
+```bash
+rm -rf /tmp/barrier-deploy-current
+mkdir -p /tmp/barrier-deploy-current
+tar -xzf /tmp/barrier-deploy.tar.gz -C /tmp/barrier-deploy-current
+find /tmp/barrier-deploy-current -name '*.sh' -exec sed -i 's/\r$//' {} +
+sudo INSTALL_FROM_LOCAL=1 LOCAL_SOURCE_DIR=/tmp/barrier-deploy-current bash /tmp/barrier-deploy-current/install.sh
+```
+
+`INSTALL_FROM_LOCAL=1` отключает клонирование из GitHub и копирует исходники из `LOCAL_SOURCE_DIR` в `/opt/barrier/src`.
+
 ## Переменные окружения
 
 Настройки можно задавать через переменные окружения. Пример есть в `.env.example`.
@@ -328,7 +349,7 @@ sudo systemctl restart barrier-panel.service
 
 Если рядом нет роутера или нужно подключаться к плате напрямую, Raspberry Pi можно перевести в режим Wi-Fi точки доступа. Тогда смартфон подключается к сети платы и открывает web-панель по фиксированному адресу.
 
-Важно: если Raspberry Pi сейчас подключена к сети через тот же Wi-Fi-интерфейс, включение точки доступа может оборвать текущее Wi-Fi-подключение. Надежнее выполнять настройку с локальной клавиатуры/монитора или через Ethernet.
+Важно: если Raspberry Pi сейчас подключена к сети через тот же Wi-Fi-интерфейс, включение точки доступа может оборвать текущее Wi-Fi-подключение. Надежнее выполнять настройку через Ethernet, локальную клавиатуру/монитор или другой канал, который не зависит от `wlan0`.
 
 Быстрый вариант:
 
@@ -343,6 +364,8 @@ sudo AP_PASSWORD='strong-password' bash scripts/setup_wifi_ap.sh
 SSID: Barrier-Panel
 Адрес панели: http://10.42.0.1:8080
 ```
+
+На смартфоне такая сеть может отображаться как сеть без интернета. Это нормально: она нужна для доступа к web-панели платы.
 
 Настройки можно переопределить:
 
@@ -362,6 +385,29 @@ http://10.42.0.1:8080
 ```
 
 Пароль web-панели все равно лучше включить через `BARRIER_PANEL_PASSWORD`, потому что пароль Wi-Fi защищает только подключение к сети, а не саму кнопку открытия.
+
+Пример настройки пароля web-панели:
+
+```bash
+sudo mkdir -p /etc/systemd/system/barrier-panel.service.d
+sudo tee /etc/systemd/system/barrier-panel.service.d/override.conf >/dev/null <<'EOF'
+[Service]
+Environment=BARRIER_PANEL_PASSWORD=strong-panel-password
+Environment=BARRIER_FLASK_SECRET_KEY=replace-with-random-string
+EOF
+sudo systemctl daemon-reload
+sudo systemctl restart barrier-panel.service
+```
+
+Проверка точки доступа:
+
+```bash
+nmcli -t -f NAME,TYPE,DEVICE connection show --active
+systemctl is-active barrier-panel.service
+curl -I http://127.0.0.1:8080/
+```
+
+В активных подключениях должна быть сеть `barrier-ap` на `wlan0`, а web-панель должна отвечать `302` или страницей входа.
 
 ## SQLite
 
