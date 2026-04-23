@@ -25,6 +25,7 @@ BARRIER_SERVICE_FILE="/etc/systemd/system/${BARRIER_SERVICE_NAME}"
 PANEL_SERVICE_FILE="/etc/systemd/system/${PANEL_SERVICE_NAME}"
 WATCHDOG_SERVICE_FILE="/etc/systemd/system/${WATCHDOG_SERVICE_NAME}"
 WATCHDOG_TIMER_FILE="/etc/systemd/system/${WATCHDOG_TIMER_NAME}"
+PANEL_SUDOERS_FILE="/etc/sudoers.d/barrier-panel-management"
 
 log() {
   echo "[INFO] $*"
@@ -84,7 +85,7 @@ fetch_repo() {
 check_repo_files() {
   local missing=0
 
-  for f in barrier_service.py panel.py scripts/bluetooth_watchdog.sh scripts/barrier_open.sh scripts/setup_wifi_ap.sh; do
+  for f in barrier_service.py panel.py scripts/bluetooth_watchdog.sh scripts/barrier_open.sh scripts/setup_wifi_ap.sh scripts/setup_ethernet_static.sh; do
     if [[ ! -f "${SRC_DIR}/${f}" ]]; then
       err "Не найден файл ${SRC_DIR}/${f}"
       missing=1
@@ -111,6 +112,7 @@ prepare_scripts() {
   chmod +x "${SRC_DIR}/scripts/bluetooth_watchdog.sh"
   chmod +x "${SRC_DIR}/scripts/barrier_open.sh"
   chmod +x "${SRC_DIR}/scripts/setup_wifi_ap.sh"
+  chmod +x "${SRC_DIR}/scripts/setup_ethernet_static.sh"
 }
 
 install_emergency_open_wrapper() {
@@ -232,6 +234,16 @@ WantedBy=timers.target
 EOF
 }
 
+write_panel_sudoers() {
+  log "Настраиваю sudo-доступ web-панели к ограниченным management-командам"
+  cat > "$PANEL_SUDOERS_FILE" <<EOF
+${SERVICE_USER} ALL=(root) NOPASSWD: /usr/bin/systemctl restart bluetooth, /usr/bin/systemctl restart barrier.service, /usr/bin/systemctl restart barrier-bluetooth-watchdog.timer, /usr/bin/systemctl start barrier-bluetooth-watchdog.service, /usr/bin/systemctl reboot, /bin/systemctl restart bluetooth, /bin/systemctl restart barrier.service, /bin/systemctl restart barrier-bluetooth-watchdog.timer, /bin/systemctl start barrier-bluetooth-watchdog.service, /bin/systemctl reboot
+EOF
+
+  chmod 0440 "$PANEL_SUDOERS_FILE"
+  visudo -cf "$PANEL_SUDOERS_FILE"
+}
+
 enable_and_start_services() {
   log "Перечитываю systemd"
   systemctl daemon-reload
@@ -309,6 +321,7 @@ main() {
   write_barrier_service
   write_panel_service
   write_watchdog_units
+  write_panel_sudoers
   enable_and_start_services
   show_summary
 }

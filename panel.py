@@ -14,6 +14,40 @@ config = load_config()
 app = Flask(__name__)
 app.secret_key = config.flask_secret_key
 
+SERVICE_NAMES = [
+    "barrier.service",
+    "barrier-panel.service",
+    "bluetooth.service",
+    "barrier-bluetooth-watchdog.timer",
+    "ssh.service",
+    "hostapd.service",
+    "dnsmasq.service",
+    "NetworkManager.service",
+]
+
+MANAGEMENT_ACTIONS = {
+    "restart-barrier": (
+        ["sudo", "systemctl", "restart", "barrier.service"],
+        "BLE-сервис перезапущен",
+    ),
+    "restart-bluetooth": (
+        ["sudo", "systemctl", "restart", "bluetooth"],
+        "Bluetooth перезапущен",
+    ),
+    "run-watchdog": (
+        ["sudo", "systemctl", "start", "barrier-bluetooth-watchdog.service"],
+        "Bluetooth watchdog запущен",
+    ),
+    "restart-watchdog-timer": (
+        ["sudo", "systemctl", "restart", "barrier-bluetooth-watchdog.timer"],
+        "Bluetooth watchdog timer перезапущен",
+    ),
+    "reboot-board": (
+        ["sudo", "systemctl", "reboot"],
+        "Плата уходит в перезагрузку",
+    ),
+}
+
 
 HTML = """
 <!doctype html>
@@ -37,6 +71,8 @@ HTML = """
     .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
     .stat { border-left: 4px solid #555; padding-left: 12px; }
     .stat strong { display: block; font-size: 24px; }
+    .service-ok { color: #0a7a0a; font-weight: bold; }
+    .service-bad { color: #b30000; font-weight: bold; }
   </style>
 </head>
 <body>
@@ -60,6 +96,7 @@ HTML = """
       <div class="stat"><span class="muted">Включено</span><strong>{{ enabled_devices }}</strong></div>
       <div class="stat"><span class="muted">База</span><strong>{{ db_path }}</strong></div>
       <div class="stat"><span class="muted">Реле</span><strong>{{ relay_port }}</strong></div>
+      <div class="stat"><span class="muted">IP</span><strong>{{ ip_addresses }}</strong></div>
     </div>
   </div>
 
@@ -76,6 +113,47 @@ HTML = """
     </form>
     <form method="post" action="{{ url_for('backup_db_route') }}">
       <button type="submit">Сделать backup базы</button>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2>Службы</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Служба</th>
+          <th>Активность</th>
+          <th>Автозапуск</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for service in services %}
+          <tr>
+            <td>{{ service.name }}</td>
+            <td class="{% if service.active == 'active' %}service-ok{% else %}service-bad{% endif %}">{{ service.active }}</td>
+            <td>{{ service.enabled }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>Управление платой</h2>
+    <form method="post" action="{{ url_for('management_action', action='restart-barrier') }}">
+      <button type="submit">Перезапустить BLE-сервис</button>
+    </form>
+    <form method="post" action="{{ url_for('management_action', action='restart-bluetooth') }}">
+      <button type="submit">Перезапустить Bluetooth</button>
+    </form>
+    <form method="post" action="{{ url_for('management_action', action='run-watchdog') }}">
+      <button type="submit">Запустить Bluetooth watchdog</button>
+    </form>
+    <form method="post" action="{{ url_for('management_action', action='restart-watchdog-timer') }}">
+      <button type="submit">Перезапустить watchdog timer</button>
+    </form>
+    <form method="post" action="{{ url_for('management_action', action='reboot-board') }}" onsubmit="return confirm('Перезагрузить плату? Web-панель временно пропадёт.');">
+      <button type="submit">Перезагрузить плату</button>
     </form>
   </div>
 
@@ -211,11 +289,15 @@ def login_required(view):
     return wrapped
 
 
-def run_barrier_command(args: list[str]) -> tuple[bool, str]:
-    cmd = [sys.executable, config.barrier_script] + args
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
+def run_command(cmd: list[str], timeout: int = 30) -> tuple[bool, str]:
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     output = (result.stdout or "") + (result.stderr or "")
     return result.returncode == 0, output.strip()
+
+
+def run_barrier_command(args: list[str]) -> tuple[bool, str]:
+    cmd = [sys.executable, config.barrier_script] + args
+    return run_command(cmd, timeout=90)
 
 
 def redirect_with_result(ok: bool, output: str, default_message: str = "Готово"):
@@ -238,6 +320,31 @@ def log_panel_event(action: str, message: str, level: str = "INFO") -> None:
         log_event(config.db_path, level, "panel", action, message)
     except Exception:
         pass
+
+
+def systemctl_value(service: str, field: str) -> str:
+    ok, output = run_command(["systemctl", field, service], timeout=10)
+    if ok and output:
+        return output
+    return output or "unknown"
+
+
+def service_statuses() -> list[dict[str, str]]:
+    return [
+        {
+            "name": service,
+            "active": systemctl_value(service, "is-active"),
+            "enabled": systemctl_value(service, "is-enabled"),
+        }
+        for service in SERVICE_NAMES
+    ]
+
+
+def ip_addresses() -> str:
+    ok, output = run_command(["hostname", "-I"], timeout=5)
+    if ok and output:
+        return output
+    return "unknown"
 
 
 @app.route("/login", methods=["GET", "POST"])
@@ -280,6 +387,8 @@ def index():
         enabled_devices=enabled_devices,
         db_path=config.db_path,
         relay_port=config.relay_port,
+        ip_addresses=ip_addresses(),
+        services=service_statuses(),
     )
 
 
@@ -334,15 +443,25 @@ def backup_db_route():
     return run_and_redirect(["backup-db"])
 
 
+@app.route("/management/<action>", methods=["POST"])
+@login_required
+def management_action(action: str):
+    if action not in MANAGEMENT_ACTIONS:
+        return redirect_with_result(False, "Неизвестное действие управления")
+
+    cmd, default_message = MANAGEMENT_ACTIONS[action]
+    ok, output = run_command(cmd, timeout=60)
+    log_panel_event(action, output or default_message, "INFO" if ok else "ERROR")
+    return redirect_with_result(ok, output, default_message)
+
+
 @app.route("/restart-bluetooth", methods=["POST"])
 @login_required
 def restart_bluetooth():
-    cmd = ["bash", "-lc", "sudo systemctl restart bluetooth"]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-    output = (result.stdout or "") + (result.stderr or "")
-    ok = result.returncode == 0
+    cmd, default_message = MANAGEMENT_ACTIONS["restart-bluetooth"]
+    ok, output = run_command(cmd, timeout=60)
     log_panel_event("restart-bluetooth", output.strip() or "Bluetooth перезапущен", "INFO" if ok else "ERROR")
-    return redirect_with_result(ok, output.strip(), "Bluetooth перезапущен")
+    return redirect_with_result(ok, output.strip(), default_message)
 
 
 if __name__ == "__main__":

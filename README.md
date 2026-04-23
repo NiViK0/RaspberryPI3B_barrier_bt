@@ -13,6 +13,9 @@
 - Журнал событий в SQLite.
 - Backup базы данных.
 - Web-панель со статусом системы, последними событиями и опциональным паролем.
+- Web-статусы служб и кнопки управления платой.
+- Wi-Fi точка доступа для прямого подключения к плате.
+- Статический Ethernet-адрес для сервисного подключения.
 - Автозапуск через `systemd`.
 - Unit-тесты логики присутствия устройств.
 
@@ -76,6 +79,7 @@ sudo bash install.sh
 - установит `pyserial` и `flask`;
 - создаст systemd-сервисы;
 - создаст Bluetooth watchdog timer;
+- настроит ограниченные sudo-права для кнопок управления в web-панели;
 - инициализирует SQLite-базу;
 - запустит web-панель;
 - попробует запустить BLE-сервис.
@@ -316,7 +320,18 @@ hostname -I
 - restart Bluetooth;
 - backup базы;
 - статус системы;
+- статус служб `barrier`, `barrier-panel`, `bluetooth`, `watchdog`, `ssh`, `hostapd`, `dnsmasq`, `NetworkManager`;
+- кнопки перезапуска BLE-сервиса, Bluetooth и watchdog;
+- кнопка перезагрузки платы;
 - последние события из SQLite.
+
+Кнопки управления платой используют ограниченный sudoers-файл:
+
+```text
+/etc/sudoers.d/barrier-panel-management
+```
+
+Он создается `install.sh` и разрешает пользователю сервиса только конкретные команды `systemctl`, необходимые панели управления.
 
 ## Пароль web-панели
 
@@ -408,6 +423,60 @@ curl -I http://127.0.0.1:8080/
 ```
 
 В активных подключениях должна быть сеть `barrier-ap` на `wlan0`, а web-панель должна отвечать `302` или страницей входа.
+
+## Статический Ethernet
+
+Для сервисного подключения через Ethernet можно закрепить адрес:
+
+```text
+IP:      10.14.0.117
+Netmask: 255.255.255.0
+Gateway: 10.14.0.1
+```
+
+Быстрая настройка:
+
+```bash
+cd /opt/barrier/src
+sudo bash scripts/setup_ethernet_static.sh
+```
+
+Скрипт по умолчанию настроит:
+
+```text
+Interface: eth0
+Address:   10.14.0.117/24
+Gateway:   10.14.0.1
+```
+
+После настройки web-панель будет доступна через Ethernet:
+
+```text
+http://10.14.0.117:8080
+```
+
+Настройки можно переопределить:
+
+```bash
+sudo \
+  ETH_INTERFACE=eth0 \
+  ETH_IP=10.14.0.117 \
+  ETH_CIDR=24 \
+  ETH_GATEWAY=10.14.0.1 \
+  ETH_DNS='10.14.0.1 1.1.1.1' \
+  bash scripts/setup_ethernet_static.sh
+```
+
+Проверка:
+
+```bash
+ip addr show eth0
+ip route
+ping -c 3 10.14.0.1
+curl -I http://10.14.0.117:8080/
+```
+
+Если подключение выполняется с ноутбука напрямую кабелем без роутера, назначьте ноутбуку адрес из той же сети, например `10.14.0.10/24`.
 
 ## SQLite
 
@@ -746,6 +815,13 @@ ls -l /dev/ttyUSB* /dev/ttyACM* 2>/dev/null
 sudo systemctl status barrier.service
 sudo systemctl status barrier-panel.service
 sudo systemctl status barrier-bluetooth-watchdog.timer
+```
+
+Проверить management-права web-панели:
+
+```bash
+sudo visudo -cf /etc/sudoers.d/barrier-panel-management
+sudo -l -U ltpibarrier
 ```
 
 Проверить порт web-панели:
