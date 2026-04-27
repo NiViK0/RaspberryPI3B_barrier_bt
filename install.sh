@@ -5,6 +5,9 @@ REPO_URL="https://github.com/NiViK0/RaspberryPI3B_barrier_bt.git"
 BRANCH="${BRANCH:-main}"
 INSTALL_FROM_LOCAL="${INSTALL_FROM_LOCAL:-false}"
 LOCAL_SOURCE_DIR="${LOCAL_SOURCE_DIR:-}"
+INSTALL_SYSTEM_PACKAGES="${INSTALL_SYSTEM_PACKAGES:-true}"
+PIP_OFFLINE="${PIP_OFFLINE:-false}"
+WHEELHOUSE_DIR="${WHEELHOUSE_DIR:-}"
 
 APP_DIR="/opt/barrier"
 SRC_DIR="${APP_DIR}/src"
@@ -47,6 +50,11 @@ require_root() {
 }
 
 install_packages() {
+  if [[ "$INSTALL_SYSTEM_PACKAGES" == "0" || "$INSTALL_SYSTEM_PACKAGES" == "false" ]]; then
+    log "Пропускаю установку системных пакетов: INSTALL_SYSTEM_PACKAGES=${INSTALL_SYSTEM_PACKAGES}"
+    return
+  fi
+
   log "Устанавливаю системные пакеты"
   apt update
   apt install -y \
@@ -126,12 +134,26 @@ create_venv() {
     sudo -u "$SERVICE_USER" "$PYTHON_BIN" -m venv "$VENV_DIR"
   fi
 
-  log "Обновляю pip и ставлю зависимости"
-  sudo -u "$SERVICE_USER" "$VENV_PYTHON" -m pip install --upgrade pip
-  if [[ -f "${SRC_DIR}/requirements.txt" ]]; then
-    sudo -u "$SERVICE_USER" "$VENV_PYTHON" -m pip install -r "${SRC_DIR}/requirements.txt"
+  if [[ "$PIP_OFFLINE" == "1" || "$PIP_OFFLINE" == "true" ]]; then
+    if [[ -z "$WHEELHOUSE_DIR" || ! -d "$WHEELHOUSE_DIR" ]]; then
+      err "Для PIP_OFFLINE=1 укажи WHEELHOUSE_DIR с wheel-файлами Python-зависимостей"
+      exit 1
+    fi
+
+    log "Ставлю Python-зависимости офлайн из ${WHEELHOUSE_DIR}"
+    if [[ -f "${SRC_DIR}/requirements.txt" ]]; then
+      sudo -u "$SERVICE_USER" "$VENV_PYTHON" -m pip install --no-index --find-links "$WHEELHOUSE_DIR" -r "${SRC_DIR}/requirements.txt"
+    else
+      sudo -u "$SERVICE_USER" "$VENV_PYTHON" -m pip install --no-index --find-links "$WHEELHOUSE_DIR" pyserial flask
+    fi
   else
-    sudo -u "$SERVICE_USER" "$VENV_PYTHON" -m pip install pyserial flask
+    log "Обновляю pip и ставлю зависимости"
+    sudo -u "$SERVICE_USER" "$VENV_PYTHON" -m pip install --upgrade pip
+    if [[ -f "${SRC_DIR}/requirements.txt" ]]; then
+      sudo -u "$SERVICE_USER" "$VENV_PYTHON" -m pip install -r "${SRC_DIR}/requirements.txt"
+    else
+      sudo -u "$SERVICE_USER" "$VENV_PYTHON" -m pip install pyserial flask
+    fi
   fi
 
   sudo -u "$SERVICE_USER" "$VENV_PYTHON" - <<'PY'

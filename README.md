@@ -61,21 +61,67 @@ barrier_service.py
 panel.py читает ту же SQLite-базу и вызывает barrier_service.py для команд управления.
 ```
 
-## Быстрая установка
+## Быстрая установка без интернета на плате
 
-На Raspberry Pi или другом Linux-устройстве:
+Если у Raspberry Pi нет доступа в интернет, но есть SSH/SFTP, устанавливайте проект локальным архивом. Интернет нужен только на компьютере, с которого вы готовите архив и wheel-файлы Python-зависимостей.
+
+На компьютере с проектом:
 
 ```bash
-git clone https://github.com/NiViK0/RaspberryPI3B_barrier_bt.git /tmp/barrier
-cd /tmp/barrier
-sudo bash install.sh
+cd RaspberryPI3B_barrier_bt
+mkdir -p deploy/wheelhouse
+python -m pip download --dest deploy/wheelhouse -r requirements.txt
+tar --exclude .git --exclude deploy -czf deploy/barrier-deploy.tar.gz .
 ```
+
+Передайте на плату по SSH:
+
+```bash
+scp deploy/barrier-deploy.tar.gz ltpibarrier@IP_ПЛАТЫ:/tmp/barrier-deploy.tar.gz
+scp -r deploy/wheelhouse ltpibarrier@IP_ПЛАТЫ:/tmp/barrier-wheelhouse
+```
+
+Если удобнее через SFTP-клиент, передайте:
+
+- `deploy/barrier-deploy.tar.gz` в `/tmp/barrier-deploy.tar.gz`;
+- папку `deploy/wheelhouse` в `/tmp/barrier-wheelhouse`.
+
+На Raspberry Pi:
+
+```bash
+rm -rf /tmp/barrier-deploy-current
+mkdir -p /tmp/barrier-deploy-current
+tar -xzf /tmp/barrier-deploy.tar.gz -C /tmp/barrier-deploy-current
+find /tmp/barrier-deploy-current -name '*.sh' -exec sed -i 's/\r$//' {} +
+sudo \
+  INSTALL_FROM_LOCAL=1 \
+  LOCAL_SOURCE_DIR=/tmp/barrier-deploy-current \
+  PIP_OFFLINE=1 \
+  WHEELHOUSE_DIR=/tmp/barrier-wheelhouse \
+  bash /tmp/barrier-deploy-current/install.sh
+```
+
+Если на плате уже установлены системные пакеты `git`, `python3`, `python3-pip`, `python3-venv`, `bluetooth`, `bluez`, `sqlite3`, можно пропустить `apt update` и `apt install`:
+
+```bash
+sudo \
+  INSTALL_FROM_LOCAL=1 \
+  LOCAL_SOURCE_DIR=/tmp/barrier-deploy-current \
+  INSTALL_SYSTEM_PACKAGES=0 \
+  PIP_OFFLINE=1 \
+  WHEELHOUSE_DIR=/tmp/barrier-wheelhouse \
+  bash /tmp/barrier-deploy-current/install.sh
+```
+
+Для первой установки на полностью чистой плате без интернета системные `.deb`-пакеты нужно поставить заранее офлайн или временно дать плате доступ к apt-репозиториям. Python-зависимости `flask` и `pyserial` ставятся из переданной папки `wheelhouse`.
+
+Если wheel-файлы готовятся на Windows, а плата использует другую архитектуру, pip может отказаться ставить отдельные бинарные зависимости. В таком случае подготовьте `wheelhouse` на Linux/Raspberry Pi той же архитектуры с доступом в интернет и перенесите папку на рабочую плату по SFTP.
 
 Скрипт:
 
-- установит системные пакеты;
+- установит системные пакеты, если не задан `INSTALL_SYSTEM_PACKAGES=0`;
 - создаст `/opt/barrier`;
-- склонирует репозиторий в `/opt/barrier/src`;
+- скопирует исходники в `/opt/barrier/src`;
 - создаст virtualenv в `/opt/barrier/venv`;
 - установит `pyserial` и `flask`;
 - создаст systemd-сервисы;
@@ -91,7 +137,7 @@ sudo bash install.sh
 
 Релиз `v1.4.0` добавляет BLE-диагностику в web-панель. Новая таблица SQLite создается автоматически при запуске `install.sh` или `barrier_service.py init-db`, миграций вручную делать не нужно.
 
-На чистой Raspberry Pi:
+Если на плате есть интернет:
 
 ```bash
 git clone --branch v1.4.0 https://github.com/NiViK0/RaspberryPI3B_barrier_bt.git /tmp/barrier
@@ -127,11 +173,14 @@ journalctl -u barrier.service -n 80 --no-pager
 
 ### Установка локальной копии
 
-Если изменения еще не отправлены в GitHub, можно установить именно текущую локальную копию проекта. На компьютере с проектом соберите архив и передайте его на Raspberry Pi:
+Если изменения еще не отправлены в GitHub, используйте тот же офлайн-сценарий через SSH/SFTP: соберите архив из текущей папки проекта, передайте его на плату и запустите `install.sh` с `INSTALL_FROM_LOCAL=1`.
 
 ```bash
-tar --exclude .git -czf barrier-deploy.tar.gz .
-scp barrier-deploy.tar.gz ltpibarrier@IP_ПЛАТЫ:/tmp/barrier-deploy.tar.gz
+mkdir -p deploy/wheelhouse
+python -m pip download --dest deploy/wheelhouse -r requirements.txt
+tar --exclude .git --exclude deploy -czf deploy/barrier-deploy.tar.gz .
+scp deploy/barrier-deploy.tar.gz ltpibarrier@IP_ПЛАТЫ:/tmp/barrier-deploy.tar.gz
+scp -r deploy/wheelhouse ltpibarrier@IP_ПЛАТЫ:/tmp/barrier-wheelhouse
 ```
 
 На Raspberry Pi:
@@ -141,10 +190,17 @@ rm -rf /tmp/barrier-deploy-current
 mkdir -p /tmp/barrier-deploy-current
 tar -xzf /tmp/barrier-deploy.tar.gz -C /tmp/barrier-deploy-current
 find /tmp/barrier-deploy-current -name '*.sh' -exec sed -i 's/\r$//' {} +
-sudo INSTALL_FROM_LOCAL=1 LOCAL_SOURCE_DIR=/tmp/barrier-deploy-current bash /tmp/barrier-deploy-current/install.sh
+sudo \
+  INSTALL_FROM_LOCAL=1 \
+  LOCAL_SOURCE_DIR=/tmp/barrier-deploy-current \
+  PIP_OFFLINE=1 \
+  WHEELHOUSE_DIR=/tmp/barrier-wheelhouse \
+  bash /tmp/barrier-deploy-current/install.sh
 ```
 
-`INSTALL_FROM_LOCAL=1` отключает клонирование из GitHub и копирует исходники из `LOCAL_SOURCE_DIR` в `/opt/barrier/src`.
+`INSTALL_FROM_LOCAL=1` отключает клонирование из GitHub и копирует исходники из `LOCAL_SOURCE_DIR` в `/opt/barrier/src`. `PIP_OFFLINE=1` запрещает pip ходить в интернет и ставит зависимости только из `WHEELHOUSE_DIR`.
+
+Если wheel-файлы готовятся на Windows, а плата использует другую архитектуру, pip может отказаться ставить отдельные бинарные зависимости. В таком случае подготовьте `wheelhouse` на Linux/Raspberry Pi той же архитектуры с доступом в интернет и перенесите папку на рабочую плату по SFTP.
 
 ## Переменные окружения
 
@@ -775,19 +831,37 @@ journalctl -u barrier-bluetooth-watchdog.service -f
 
 ## Обновление
 
-Если проект установлен через `install.sh`, обновить код можно повторным запуском:
+Если у платы нет интернета, обновляйте так же, как устанавливали: соберите свежий архив на компьютере, передайте его по SSH/SFTP и повторно запустите `install.sh` в локальном режиме.
 
 ```bash
-cd /tmp/barrier
-git pull
-sudo bash install.sh
+cd RaspberryPI3B_barrier_bt
+mkdir -p deploy/wheelhouse
+python -m pip download --dest deploy/wheelhouse -r requirements.txt
+tar --exclude .git --exclude deploy -czf deploy/barrier-deploy.tar.gz .
+scp deploy/barrier-deploy.tar.gz ltpibarrier@IP_ПЛАТЫ:/tmp/barrier-deploy.tar.gz
+scp -r deploy/wheelhouse ltpibarrier@IP_ПЛАТЫ:/tmp/barrier-wheelhouse
 ```
 
-Или вручную:
+На Raspberry Pi:
+
+```bash
+rm -rf /tmp/barrier-deploy-current
+mkdir -p /tmp/barrier-deploy-current
+tar -xzf /tmp/barrier-deploy.tar.gz -C /tmp/barrier-deploy-current
+sudo \
+  INSTALL_FROM_LOCAL=1 \
+  LOCAL_SOURCE_DIR=/tmp/barrier-deploy-current \
+  INSTALL_SYSTEM_PACKAGES=0 \
+  PIP_OFFLINE=1 \
+  WHEELHOUSE_DIR=/tmp/barrier-wheelhouse \
+  bash /tmp/barrier-deploy-current/install.sh
+```
+
+Если на плате есть интернет, можно обновить через git:
 
 ```bash
 cd /opt/barrier/src
-git pull
+git pull origin main
 sudo systemctl restart barrier.service barrier-panel.service
 ```
 
