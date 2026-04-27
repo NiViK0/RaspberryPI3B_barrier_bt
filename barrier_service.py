@@ -5,7 +5,7 @@ import sys
 import time
 from dataclasses import replace
 
-from barrier_bluetooth import BluetoothCtlSession, scan_once
+from barrier_bluetooth import BluetoothCtlSession, collect_scan_details, scan_once
 from barrier_config import Config, load_config
 from barrier_db import (
     add_device,
@@ -16,6 +16,7 @@ from barrier_db import (
     log_event,
     normalize_mac,
     remove_device,
+    save_bluetooth_status,
     set_device_enabled,
 )
 from barrier_presence import detect_any_target_presence, process_presence, validate_mac
@@ -36,6 +37,45 @@ def log_db_event(config: Config, level: str, source: str, action: str, message: 
         log_event(config.db_path, level, source, action, message)
     except Exception:
         logging.debug("Не удалось записать событие в БД", exc_info=True)
+
+
+def save_scan_status(
+    config: Config,
+    status: PresenceStatus,
+    devices_output: str,
+    allowed_macs: list[str],
+    bt: BluetoothCtlSession,
+) -> None:
+    try:
+        if status == PresenceStatus.SCAN_FAILED:
+            save_bluetooth_status(
+                config.db_path,
+                "scan_failed",
+                0,
+                0,
+                0,
+                None,
+                "",
+                [],
+                devices_output,
+                "BLE scan failed",
+            )
+            return
+
+        details = collect_scan_details(bt, devices_output, allowed_macs)
+        save_bluetooth_status(
+            config.db_path,
+            "ok",
+            int(details["total_devices"]),
+            int(details["connected_devices"]),
+            int(details["allowed_seen"]),
+            details["max_rssi"],  # type: ignore[arg-type]
+            str(details["strongest_device"]),
+            details["devices"],  # type: ignore[arg-type]
+            devices_output,
+        )
+    except Exception:
+        logging.exception("Could not save BLE status")
 
 
 def cmd_init_db(config: Config) -> None:
@@ -182,16 +222,14 @@ def cmd_run(config: Config) -> None:
         with RelayController(config) as relay:
             while True:
                 allowed_macs = get_enabled_macs(config.db_path)
-                if not allowed_macs:
-                    logging.warning("Список разрешённых MAC пуст")
-                    time.sleep(config.check_interval)
-                    continue
-
                 base_status, devices_output = scan_once(bt, config.scan_time)
+                save_scan_status(config, base_status, devices_output, allowed_macs, bt)
 
                 if base_status == PresenceStatus.SCAN_FAILED:
                     log_db_event(config, "WARN", "service", "scan-failed", "BLE-сканирование не удалось")
                     process_presence(base_status, devices_output, config, state, trigger_action)
+                elif not allowed_macs:
+                    logging.warning("Список разрешённых MAC пуст, BLE-статус сохранён только для диагностики")
                 else:
                     actual_presence = detect_any_target_presence(devices_output, allowed_macs)
                     process_presence(actual_presence, devices_output, config, state, trigger_action)

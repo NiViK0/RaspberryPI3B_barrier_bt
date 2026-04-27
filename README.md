@@ -12,7 +12,8 @@
 - Автоопределение serial-порта реле.
 - Журнал событий в SQLite.
 - Backup базы данных.
-- Web-панель со статусом системы, последними событиями и опциональным паролем.
+- Web-панель со статусом системы, BLE-диагностикой, последними событиями и опциональным паролем.
+- BLE-диагностика: время последнего скана, RSSI, количество видимых и подключенных устройств.
 - Web-статусы служб и кнопки управления платой.
 - Wi-Fi точка доступа для прямого подключения к плате.
 - Статический Ethernet-адрес для сервисного подключения.
@@ -50,7 +51,7 @@ bluetoothctl scan
         v
 barrier_service.py
         |
-        +--> SQLite: allowed_devices, event_log
+        +--> SQLite: allowed_devices, event_log, bluetooth_status
         |
         +--> serial relay
         |
@@ -85,6 +86,44 @@ sudo bash install.sh
 - попробует запустить BLE-сервис.
 
 Если BLE-сервис не стартует сразу, это нормально: сначала может понадобиться добавить MAC-адрес телефона и проверить реле.
+
+### Установка релиза v1.4.0
+
+Релиз `v1.4.0` добавляет BLE-диагностику в web-панель. Новая таблица SQLite создается автоматически при запуске `install.sh` или `barrier_service.py init-db`, миграций вручную делать не нужно.
+
+На чистой Raspberry Pi:
+
+```bash
+git clone --branch v1.4.0 https://github.com/NiViK0/RaspberryPI3B_barrier_bt.git /tmp/barrier
+cd /tmp/barrier
+sudo bash install.sh
+```
+
+На уже установленной системе:
+
+```bash
+cd /opt/barrier/src
+git fetch --tags origin
+git checkout v1.4.0
+/opt/barrier/venv/bin/python /opt/barrier/src/barrier_service.py init-db
+sudo systemctl restart barrier.service barrier-panel.service
+```
+
+После перезапуска откройте web-панель и проверьте блок `BLE диагностика`. В нем должны появиться:
+
+- время последнего BLE-скана;
+- количество видимых BLE-устройств;
+- количество подключенных устройств;
+- количество видимых разрешенных устройств;
+- лучший RSSI в dBm;
+- таблица устройств с MAC, RSSI, connected и allowed.
+
+Если блок показывает, что сервис еще не записал BLE-статус, подождите один цикл сканирования или перезапустите сервис:
+
+```bash
+sudo systemctl restart barrier.service
+journalctl -u barrier.service -n 80 --no-pager
+```
 
 ### Установка локальной копии
 
@@ -312,6 +351,7 @@ hostname -I
 В панели доступны:
 
 - список разрешенных устройств;
+- BLE-диагностика: последний скан, RSSI, видимые устройства, connected/allowed;
 - добавление устройства;
 - включение и отключение устройства;
 - удаление устройства;
@@ -490,8 +530,11 @@ curl -I http://10.14.0.117:8080/
 
 - `allowed_devices`: разрешенные устройства;
 - `event_log`: журнал событий.
+- `bluetooth_status`: последний BLE-снимок для web-панели.
 
 Журнал событий заполняется сервисом, CLI и web-панелью. В него пишутся добавления устройств, включение/отключение, тесты реле, backup, ошибки сканирования и импульсы открытия/закрытия.
+
+`bluetooth_status` перезаписывается после каждого BLE-скана. Там хранится количество найденных устройств, количество connected-устройств, количество видимых разрешенных MAC, лучший RSSI, самый сильный найденный девайс и JSON со списком устройств.
 
 ## Backup базы
 
@@ -909,7 +952,8 @@ sudo systemctl restart barrier-panel.service
 - телефон не спит;
 - телефон видим для Bluetooth;
 - MAC не меняется из-за приватного адреса;
-- `bluetoothctl scan on` реально видит устройства.
+- `bluetoothctl scan on` реально видит устройства;
+- в web-панели в блоке `BLE диагностика` обновляется время последнего скана.
 
 Команды:
 
@@ -917,6 +961,7 @@ sudo systemctl restart barrier-panel.service
 bluetoothctl show
 timeout 20s bluetoothctl scan on
 bluetoothctl devices
+bluetoothctl info AA:BB:CC:DD:EE:FF
 ```
 
 Если `bluetoothctl show` показывает:
@@ -942,6 +987,8 @@ sudo systemctl restart barrier.service
 bluetoothctl show
 journalctl -u barrier.service -n 80 --no-pager
 ```
+
+Если в web-панели устройство видно, но RSSI пустой, это означает, что `bluetoothctl info MAC` не отдал строку `RSSI`. Для некоторых устройств это нормально: сервис все равно покажет факт обнаружения и статус connected/allowed.
 
 ### Реле не срабатывает
 
@@ -1014,7 +1061,6 @@ sudo systemctl enable barrier-bluetooth-watchdog.timer
 ## Что можно улучшить дальше
 
 - Фильтрация по RSSI, чтобы учитывать расстояние до телефона.
-- Отдельный аварийный способ открытия.
 - Экспорт журнала событий.
 - Более строгая авторизация web-панели с пользователями.
 - Настройки через отдельный `/etc/barrier/barrier.env`.

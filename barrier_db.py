@@ -1,9 +1,11 @@
 import os
 import shutil
 import sqlite3
+import json
+from contextlib import closing
 from datetime import datetime
 
-from barrier_types import DeviceRow, EventRow
+from barrier_types import BluetoothStatusRow, DeviceRow, EventRow
 
 
 def normalize_mac(mac: str) -> str:
@@ -15,7 +17,7 @@ def init_db(db_path: str) -> None:
     if db_dir:
         os.makedirs(db_dir, exist_ok=True)
 
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn:
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS allowed_devices (
@@ -39,12 +41,29 @@ def init_db(db_path: str) -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS bluetooth_status (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                status TEXT NOT NULL,
+                total_devices INTEGER NOT NULL DEFAULT 0,
+                connected_devices INTEGER NOT NULL DEFAULT 0,
+                allowed_seen INTEGER NOT NULL DEFAULT 0,
+                max_rssi INTEGER,
+                strongest_device TEXT NOT NULL DEFAULT '',
+                devices_json TEXT NOT NULL DEFAULT '[]',
+                raw_output TEXT NOT NULL DEFAULT '',
+                error TEXT NOT NULL DEFAULT ''
+            )
+            """
+        )
         conn.commit()
 
 
 def add_device(db_path: str, mac: str, name: str) -> None:
     mac = normalize_mac(mac)
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn:
         conn.execute(
             """
             INSERT INTO allowed_devices(name, mac, enabled)
@@ -59,7 +78,7 @@ def add_device(db_path: str, mac: str, name: str) -> None:
 
 
 def list_devices(db_path: str) -> list[DeviceRow]:
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn:
         return conn.execute(
             "SELECT id, name, mac, enabled FROM allowed_devices ORDER BY name"
         ).fetchall()
@@ -67,7 +86,7 @@ def list_devices(db_path: str) -> list[DeviceRow]:
 
 def set_device_enabled(db_path: str, mac: str, enabled: bool) -> bool:
     mac = normalize_mac(mac)
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn:
         cur = conn.execute(
             "UPDATE allowed_devices SET enabled = ? WHERE mac = ?",
             (1 if enabled else 0, mac),
@@ -78,14 +97,14 @@ def set_device_enabled(db_path: str, mac: str, enabled: bool) -> bool:
 
 def remove_device(db_path: str, mac: str) -> bool:
     mac = normalize_mac(mac)
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn:
         cur = conn.execute("DELETE FROM allowed_devices WHERE mac = ?", (mac,))
         conn.commit()
     return cur.rowcount > 0
 
 
 def get_enabled_macs(db_path: str) -> list[str]:
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn:
         rows = conn.execute(
             "SELECT mac FROM allowed_devices WHERE enabled = 1"
         ).fetchall()
@@ -93,7 +112,7 @@ def get_enabled_macs(db_path: str) -> list[str]:
 
 
 def log_event(db_path: str, level: str, source: str, action: str, message: str) -> None:
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn:
         conn.execute(
             """
             INSERT INTO event_log(level, source, action, message)
@@ -105,7 +124,7 @@ def log_event(db_path: str, level: str, source: str, action: str, message: str) 
 
 
 def recent_events(db_path: str, limit: int = 20) -> list[EventRow]:
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn:
         return conn.execute(
             """
             SELECT id, created_at, level, source, action, message
@@ -118,7 +137,7 @@ def recent_events(db_path: str, limit: int = 20) -> list[EventRow]:
 
 
 def device_counts(db_path: str) -> tuple[int, int]:
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn:
         total = conn.execute("SELECT COUNT(*) FROM allowed_devices").fetchone()[0]
         enabled = conn.execute(
             "SELECT COUNT(*) FROM allowed_devices WHERE enabled = 1"
@@ -127,7 +146,7 @@ def device_counts(db_path: str) -> tuple[int, int]:
 
 
 def latest_event_for_action(db_path: str, action: str) -> EventRow | None:
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn:
         return conn.execute(
             """
             SELECT id, created_at, level, source, action, message
@@ -138,6 +157,87 @@ def latest_event_for_action(db_path: str, action: str) -> EventRow | None:
             """,
             (action,),
         ).fetchone()
+
+
+def save_bluetooth_status(
+    db_path: str,
+    status: str,
+    total_devices: int,
+    connected_devices: int,
+    allowed_seen: int,
+    max_rssi: int | None,
+    strongest_device: str,
+    devices: list[dict[str, object]],
+    raw_output: str,
+    error: str = "",
+) -> None:
+    with closing(sqlite3.connect(db_path)) as conn:
+        conn.execute(
+            """
+            INSERT INTO bluetooth_status(
+                id, updated_at, status, total_devices, connected_devices,
+                allowed_seen, max_rssi, strongest_device, devices_json, raw_output, error
+            )
+            VALUES (1, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                updated_at = excluded.updated_at,
+                status = excluded.status,
+                total_devices = excluded.total_devices,
+                connected_devices = excluded.connected_devices,
+                allowed_seen = excluded.allowed_seen,
+                max_rssi = excluded.max_rssi,
+                strongest_device = excluded.strongest_device,
+                devices_json = excluded.devices_json,
+                raw_output = excluded.raw_output,
+                error = excluded.error
+            """,
+            (
+                status,
+                total_devices,
+                connected_devices,
+                allowed_seen,
+                max_rssi,
+                strongest_device,
+                json.dumps(devices, ensure_ascii=False),
+                raw_output,
+                error,
+            ),
+        )
+        conn.commit()
+
+
+def latest_bluetooth_status(db_path: str) -> dict[str, object] | None:
+    with closing(sqlite3.connect(db_path)) as conn:
+        row: BluetoothStatusRow | None = conn.execute(
+            """
+            SELECT id, updated_at, status, total_devices, connected_devices,
+                   allowed_seen, max_rssi, strongest_device, devices_json, raw_output, error
+            FROM bluetooth_status
+            WHERE id = 1
+            """
+        ).fetchone()
+
+    if row is None:
+        return None
+
+    devices_json = row[8] or "[]"
+    try:
+        devices = json.loads(devices_json)
+    except json.JSONDecodeError:
+        devices = []
+
+    return {
+        "updated_at": row[1],
+        "status": row[2],
+        "total_devices": row[3],
+        "connected_devices": row[4],
+        "allowed_seen": row[5],
+        "max_rssi": row[6],
+        "strongest_device": row[7],
+        "devices": devices,
+        "raw_output": row[9],
+        "error": row[10],
+    }
 
 
 def backup_db(db_path: str, backup_dir: str) -> str:

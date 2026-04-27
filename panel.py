@@ -7,7 +7,7 @@ from functools import wraps
 from flask import Flask, redirect, render_template_string, request, session, url_for
 
 from barrier_config import load_config
-from barrier_db import device_counts, init_db, list_devices, log_event, recent_events
+from barrier_db import device_counts, init_db, latest_bluetooth_status, list_devices, log_event, recent_events
 
 
 config = load_config()
@@ -73,6 +73,13 @@ HTML = """
     .stat strong { display: block; font-size: 24px; }
     .service-ok { color: #0a7a0a; font-weight: bold; }
     .service-bad { color: #b30000; font-weight: bold; }
+    .ble-ok { border-left-color: #0a7a0a; }
+    .ble-warn { border-left-color: #c97700; }
+    .ble-bad { border-left-color: #b30000; }
+    .badge { display: inline-block; padding: 3px 8px; border-radius: 999px; background: #eee; font-size: 12px; }
+    .badge-ok { background: #e6f4e6; color: #0a7a0a; }
+    .badge-bad { background: #f7e6e6; color: #b30000; }
+    .mono { font-family: Consolas, monospace; }
   </style>
 </head>
 <body>
@@ -98,6 +105,63 @@ HTML = """
       <div class="stat"><span class="muted">Реле</span><strong>{{ relay_port }}</strong></div>
       <div class="stat"><span class="muted">IP</span><strong>{{ ip_addresses }}</strong></div>
     </div>
+  </div>
+
+  <div class="card">
+    <h2>BLE диагностика</h2>
+    {% if bluetooth_status %}
+      <div class="stats">
+        <div class="stat {% if bluetooth_status.status == 'ok' %}ble-ok{% else %}ble-bad{% endif %}">
+          <span class="muted">Последний скан</span>
+          <strong>{{ bluetooth_status.updated_at }}</strong>
+        </div>
+        <div class="stat ble-ok"><span class="muted">Видно BLE</span><strong>{{ bluetooth_status.total_devices }}</strong></div>
+        <div class="stat {% if bluetooth_status.connected_devices %}ble-ok{% else %}ble-warn{% endif %}">
+          <span class="muted">Подключено</span><strong>{{ bluetooth_status.connected_devices }}</strong>
+        </div>
+        <div class="stat {% if bluetooth_status.allowed_seen %}ble-ok{% else %}ble-warn{% endif %}">
+          <span class="muted">Разрешенных видно</span><strong>{{ bluetooth_status.allowed_seen }}</strong>
+        </div>
+        <div class="stat {% if bluetooth_status.max_rssi is not none %}ble-ok{% else %}ble-warn{% endif %}">
+          <span class="muted">Лучший RSSI</span>
+          <strong>{% if bluetooth_status.max_rssi is not none %}{{ bluetooth_status.max_rssi }} dBm{% else %}n/a{% endif %}</strong>
+        </div>
+      </div>
+      {% if bluetooth_status.strongest_device %}
+        <p><b>Самый сильный сигнал:</b> {{ bluetooth_status.strongest_device }}</p>
+      {% endif %}
+      {% if bluetooth_status.error %}
+        <p class="err">{{ bluetooth_status.error }}</p>
+      {% endif %}
+      {% if bluetooth_status.devices %}
+        <table>
+          <thead>
+            <tr>
+              <th>Устройство</th>
+              <th>MAC</th>
+              <th>RSSI</th>
+              <th>Подключено</th>
+              <th>Допущено</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for d in bluetooth_status.devices %}
+              <tr>
+                <td>{{ d.name }}</td>
+                <td class="mono">{{ d.mac }}</td>
+                <td>{% if d.rssi is not none %}{{ d.rssi }} dBm{% else %}<span class="muted">n/a</span>{% endif %}</td>
+                <td>{% if d.connected %}<span class="badge badge-ok">yes</span>{% else %}<span class="badge">no</span>{% endif %}</td>
+                <td>{% if d.allowed %}<span class="badge badge-ok">yes</span>{% else %}<span class="badge badge-bad">no</span>{% endif %}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% else %}
+        <p class="muted">BLE-устройства пока не видны.</p>
+      {% endif %}
+    {% else %}
+      <p class="muted">Сервис еще не записал BLE-статус. После следующего скана здесь появятся RSSI и число устройств.</p>
+    {% endif %}
   </div>
 
   <div class="card">
@@ -389,6 +453,7 @@ def index():
         relay_port=config.relay_port,
         ip_addresses=ip_addresses(),
         services=service_statuses(),
+        bluetooth_status=latest_bluetooth_status(config.db_path),
     )
 
 
