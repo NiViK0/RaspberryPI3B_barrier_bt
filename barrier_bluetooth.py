@@ -178,3 +178,18 @@ def collect_scan_details(
         "max_rssi": max_rssi,
         "strongest_device": strongest,
     }
+
+
+def detect_allowed_presence_from_details(
+    devices: list[dict[str, object]],
+    min_rssi: int | None = None,
+) -> PresenceStatus:
+    for device in devices:
+        if not device.get("allowed"):
+            continue
+        if min_rssi is None:
+            return PresenceStatus.PRESENT
+        rssi = device.get("rssi")
+        if rssi is not None and int(rssi) >= min_rssi:
+            return PresenceStatus.PRESENT
+    return PresenceStatus.ABSENT

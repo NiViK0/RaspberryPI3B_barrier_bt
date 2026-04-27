@@ -69,9 +69,7 @@ panel.py читает ту же SQLite-базу и вызывает barrier_serv
 
 ```bash
 cd RaspberryPI3B_barrier_bt
-mkdir -p deploy/wheelhouse
-python -m pip download --dest deploy/wheelhouse -r requirements.txt
-tar --exclude .git --exclude deploy -czf deploy/barrier-deploy.tar.gz .
+PowerShell -ExecutionPolicy Bypass -File scripts/make_offline_deploy.ps1
 ```
 
 Передайте на плату по SSH:
@@ -177,9 +175,7 @@ journalctl -u barrier.service -n 80 --no-pager
 Если изменения еще не отправлены в GitHub, используйте тот же офлайн-сценарий через SSH/SFTP: соберите архив из текущей папки проекта, передайте его на плату и запустите `install.sh` с `INSTALL_FROM_LOCAL=1`.
 
 ```bash
-mkdir -p deploy/wheelhouse
-python -m pip download --dest deploy/wheelhouse -r requirements.txt
-tar --exclude .git --exclude deploy -czf deploy/barrier-deploy.tar.gz .
+PowerShell -ExecutionPolicy Bypass -File scripts/make_offline_deploy.ps1
 scp deploy/barrier-deploy.tar.gz ltpibarrier@IP_ПЛАТЫ:/tmp/barrier-deploy.tar.gz
 scp -r deploy/wheelhouse ltpibarrier@IP_ПЛАТЫ:/tmp/barrier-wheelhouse
 ```
@@ -224,6 +220,7 @@ BARRIER_CHECK_INTERVAL=2
 BARRIER_COOLDOWN=15
 BARRIER_PULSE_TIME=2
 BARRIER_MISSING_THRESHOLD=3
+BARRIER_MIN_RSSI=
 
 BARRIER_PANEL_HOST=0.0.0.0
 BARRIER_PANEL_PORT=8080
@@ -234,6 +231,8 @@ BARRIER_FLASK_SECRET_KEY=change-me
 `BARRIER_RELAY_PORT=auto` включает поиск первого доступного порта из `/dev/ttyUSB*` и `/dev/ttyACM*`.
 
 `BARRIER_DRY_RUN=true` отключает реальную активацию реле. Сервис будет логировать действия, но не писать в serial-порт.
+
+`BARRIER_MIN_RSSI=-85` включает порог мощности сигнала. Если переменная пустая, любой найденный разрешенный MAC считается присутствующим. Если задан порог, устройство считается присутствующим только когда его RSSI не слабее порога.
 
 `BARRIER_PANEL_PASSWORD` включает пароль для web-панели. Если переменная пустая, панель доступна без логина.
 
@@ -371,6 +370,12 @@ $PY $APP detect-relay
 $PY $APP backup-db
 ```
 
+Обновить BLE-статус для web-панели вручную:
+
+```bash
+$PY $APP scan-status
+```
+
 Запустить основной BLE-цикл вручную:
 
 ```bash
@@ -409,12 +414,16 @@ hostname -I
 
 - список разрешенных устройств;
 - BLE-диагностика: последний скан, RSSI, видимые устройства, connected/allowed;
+- возраст последнего BLE-скана и missing-счетчик;
+- таблица текущего состояния разрешенных устройств;
 - добавление устройства;
 - включение и отключение устройства;
 - удаление устройства;
 - ручное открытие шлагбаума;
 - тестовое открытие;
 - синхронизация времени платы с временем браузера;
+- ручное обновление BLE-скана;
+- скачивание диагностического отчета;
 - restart Bluetooth;
 - backup базы;
 - статус системы;
@@ -620,7 +629,7 @@ curl -I http://10.14.0.117:8080/
 
 Журнал событий заполняется сервисом, CLI и web-панелью. В него пишутся добавления устройств, включение/отключение, тесты реле, backup, ошибки сканирования и импульсы открытия/закрытия.
 
-`bluetooth_status` перезаписывается после каждого BLE-скана. Там хранится количество найденных устройств, количество connected-устройств, количество видимых разрешенных MAC, лучший RSSI, самый сильный найденный девайс и JSON со списком устройств.
+`bluetooth_status` перезаписывается после каждого BLE-скана. Там хранится количество найденных устройств, количество connected-устройств, количество видимых разрешенных MAC, лучший RSSI, самый сильный найденный девайс, JSON со списком устройств, текущий presence-статус, missing-счетчик и RSSI-порог.
 
 ## Backup базы
 
@@ -865,9 +874,7 @@ journalctl -u barrier-bluetooth-watchdog.service -f
 
 ```bash
 cd RaspberryPI3B_barrier_bt
-mkdir -p deploy/wheelhouse
-python -m pip download --dest deploy/wheelhouse -r requirements.txt
-tar --exclude .git --exclude deploy -czf deploy/barrier-deploy.tar.gz .
+PowerShell -ExecutionPolicy Bypass -File scripts/make_offline_deploy.ps1
 scp deploy/barrier-deploy.tar.gz ltpibarrier@IP_ПЛАТЫ:/tmp/barrier-deploy.tar.gz
 scp -r deploy/wheelhouse ltpibarrier@IP_ПЛАТЫ:/tmp/barrier-wheelhouse
 ```

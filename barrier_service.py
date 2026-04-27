@@ -5,7 +5,12 @@ import sys
 import time
 from dataclasses import replace
 
-from barrier_bluetooth import BluetoothCtlSession, collect_scan_details, scan_once
+from barrier_bluetooth import (
+    BluetoothCtlSession,
+    collect_scan_details,
+    detect_allowed_presence_from_details,
+    scan_once,
+)
 from barrier_config import Config, load_config
 from barrier_db import (
     add_device,
@@ -19,7 +24,7 @@ from barrier_db import (
     save_bluetooth_status,
     set_device_enabled,
 )
-from barrier_presence import detect_any_target_presence, process_presence, validate_mac
+from barrier_presence import process_presence, validate_mac
 from barrier_relay import RelayController, SerialDependencyError, SerialException, detect_relay_port
 from barrier_types import PresenceStatus, State
 
@@ -45,7 +50,7 @@ def save_scan_status(
     devices_output: str,
     allowed_macs: list[str],
     bt: BluetoothCtlSession,
-) -> None:
+) -> dict[str, object] | None:
     try:
         if status == PresenceStatus.SCAN_FAILED:
             save_bluetooth_status(
@@ -59,10 +64,17 @@ def save_scan_status(
                 [],
                 devices_output,
                 "BLE scan failed",
+                presence_status=PresenceStatus.SCAN_FAILED.name.lower(),
+                missing_threshold=config.missing_threshold,
+                min_rssi=config.min_rssi,
             )
-            return
+            return None
 
         details = collect_scan_details(bt, devices_output, allowed_macs)
+        presence = detect_allowed_presence_from_details(
+            details["devices"],  # type: ignore[arg-type]
+            config.min_rssi,
+        )
         save_bluetooth_status(
             config.db_path,
             "ok",
@@ -73,9 +85,61 @@ def save_scan_status(
             str(details["strongest_device"]),
             details["devices"],  # type: ignore[arg-type]
             devices_output,
+            presence_status=presence.name.lower(),
+            missing_threshold=config.missing_threshold,
+            min_rssi=config.min_rssi,
+            allowed_present=presence == PresenceStatus.PRESENT,
         )
+        return details
     except Exception:
         logging.exception("Could not save BLE status")
+        return None
+
+
+def save_scan_snapshot(
+    config: Config,
+    status: PresenceStatus,
+    devices_output: str,
+    details: dict[str, object] | None,
+    state: State,
+    presence: PresenceStatus,
+) -> None:
+    if status == PresenceStatus.SCAN_FAILED or details is None:
+        save_bluetooth_status(
+            config.db_path,
+            "scan_failed",
+            0,
+            0,
+            0,
+            None,
+            "",
+            [],
+            devices_output,
+            "BLE scan failed",
+            presence_status=PresenceStatus.SCAN_FAILED.name.lower(),
+            missing_count=state.missing_count,
+            missing_threshold=config.missing_threshold,
+            min_rssi=config.min_rssi,
+            allowed_present=state.any_device_was_present,
+        )
+        return
+
+    save_bluetooth_status(
+        config.db_path,
+        "ok",
+        int(details["total_devices"]),
+        int(details["connected_devices"]),
+        int(details["allowed_seen"]),
+        details["max_rssi"],  # type: ignore[arg-type]
+        str(details["strongest_device"]),
+        details["devices"],  # type: ignore[arg-type]
+        devices_output,
+        presence_status=presence.name.lower(),
+        missing_count=state.missing_count,
+        missing_threshold=config.missing_threshold,
+        min_rssi=config.min_rssi,
+        allowed_present=state.any_device_was_present,
+    )
 
 
 def cmd_init_db(config: Config) -> None:
@@ -183,6 +247,37 @@ def cmd_backup_db(config: Config) -> None:
     print(f"Backup базы создан: {backup_path}")
 
 
+def cmd_scan_status(config: Config) -> None:
+    init_db(config.db_path)
+    allowed_macs = get_enabled_macs(config.db_path)
+    bt = BluetoothCtlSession()
+    try:
+        base_status, devices_output = scan_once(bt, config.scan_time)
+        details = None
+        presence = PresenceStatus.SCAN_FAILED
+        if base_status != PresenceStatus.SCAN_FAILED:
+            details = collect_scan_details(bt, devices_output, allowed_macs)
+            presence = detect_allowed_presence_from_details(
+                details["devices"],  # type: ignore[arg-type]
+                config.min_rssi,
+            )
+
+        save_scan_snapshot(config, base_status, devices_output, details, State(), presence)
+        if base_status == PresenceStatus.SCAN_FAILED:
+            print("BLE scan failed")
+        else:
+            assert details is not None
+            print(
+                "BLE scan saved: "
+                f"devices={details['total_devices']} "
+                f"connected={details['connected_devices']} "
+                f"allowed_seen={details['allowed_seen']} "
+                f"presence={presence.name.lower()}"
+            )
+    finally:
+        bt.stop()
+
+
 def cmd_run(config: Config) -> None:
     init_db(config.db_path)
     state = State()
@@ -223,16 +318,23 @@ def cmd_run(config: Config) -> None:
             while True:
                 allowed_macs = get_enabled_macs(config.db_path)
                 base_status, devices_output = scan_once(bt, config.scan_time)
-                save_scan_status(config, base_status, devices_output, allowed_macs, bt)
 
                 if base_status == PresenceStatus.SCAN_FAILED:
                     log_db_event(config, "WARN", "service", "scan-failed", "BLE-сканирование не удалось")
                     process_presence(base_status, devices_output, config, state, trigger_action)
+                    save_scan_snapshot(config, base_status, devices_output, None, state, base_status)
                 elif not allowed_macs:
                     logging.warning("Список разрешённых MAC пуст, BLE-статус сохранён только для диагностики")
+                    details = collect_scan_details(bt, devices_output, allowed_macs)
+                    save_scan_snapshot(config, base_status, devices_output, details, state, PresenceStatus.ABSENT)
                 else:
-                    actual_presence = detect_any_target_presence(devices_output, allowed_macs)
+                    details = collect_scan_details(bt, devices_output, allowed_macs)
+                    actual_presence = detect_allowed_presence_from_details(
+                        details["devices"],  # type: ignore[arg-type]
+                        config.min_rssi,
+                    )
                     process_presence(actual_presence, devices_output, config, state, trigger_action)
+                    save_scan_snapshot(config, base_status, devices_output, details, state, actual_presence)
 
                 time.sleep(config.check_interval)
 
@@ -297,6 +399,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_backup_db = subparsers.add_parser("backup-db", help="Сделать backup SQLite-базы")
     p_backup_db.set_defaults(handler=lambda config, args: cmd_backup_db(config))
+
+    p_scan_status = subparsers.add_parser("scan-status", help="Обновить BLE-статус для web-панели")
+    p_scan_status.set_defaults(handler=lambda config, args: cmd_scan_status(config))
 
     p_run = subparsers.add_parser("run", help="Запустить основной цикл")
     p_run.set_defaults(handler=lambda config, args: cmd_run(config))

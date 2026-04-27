@@ -3,12 +3,13 @@ import secrets
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from functools import wraps
 
-from flask import Flask, redirect, render_template_string, request, session, url_for
+from flask import Flask, Response, redirect, render_template_string, request, session, url_for
 
 from barrier_config import load_config
-from barrier_db import device_counts, init_db, latest_bluetooth_status, list_devices, log_event, recent_events
+from barrier_db import device_counts, init_db, latest_bluetooth_status, list_devices, log_event, normalize_mac, recent_events
 
 
 config = load_config()
@@ -81,6 +82,7 @@ HTML = """
     .badge-ok { background: #e6f4e6; color: #0a7a0a; }
     .badge-bad { background: #f7e6e6; color: #b30000; }
     .mono { font-family: Consolas, monospace; }
+    .small { font-size: 13px; }
   </style>
 </head>
 <body>
@@ -105,7 +107,7 @@ HTML = """
       <div class="stat"><span class="muted">База</span><strong>{{ db_path }}</strong></div>
       <div class="stat"><span class="muted">Реле</span><strong>{{ relay_port }}</strong></div>
       <div class="stat"><span class="muted">IP</span><strong>{{ ip_addresses }}</strong></div>
-      <div class="stat"><span class="muted">Время платы</span><strong>{{ board_time }}</strong></div>
+      <div class="stat"><span class="muted">Время платы</span><strong id="board-time" data-epoch="{{ board_time_epoch }}">{{ board_time }}</strong><span class="muted small" id="time-drift"></span></div>
     </div>
   </div>
 
@@ -116,6 +118,7 @@ HTML = """
         <div class="stat {% if bluetooth_status.status == 'ok' %}ble-ok{% else %}ble-bad{% endif %}">
           <span class="muted">Последний скан</span>
           <strong>{{ bluetooth_status.updated_at }}</strong>
+          <span class="muted small">{{ bluetooth_status.age_label }}</span>
         </div>
         <div class="stat ble-ok"><span class="muted">Видно BLE</span><strong>{{ bluetooth_status.total_devices }}</strong></div>
         <div class="stat {% if bluetooth_status.connected_devices %}ble-ok{% else %}ble-warn{% endif %}">
@@ -128,7 +131,15 @@ HTML = """
           <span class="muted">Лучший RSSI</span>
           <strong>{% if bluetooth_status.max_rssi is not none %}{{ bluetooth_status.max_rssi }} dBm{% else %}n/a{% endif %}</strong>
         </div>
+        <div class="stat {% if bluetooth_status.allowed_present %}ble-ok{% else %}ble-warn{% endif %}">
+          <span class="muted">Presence</span>
+          <strong>{{ bluetooth_status.presence_status }}</strong>
+          <span class="muted small">missing {{ bluetooth_status.missing_count }}/{{ bluetooth_status.missing_threshold }}</span>
+        </div>
       </div>
+      {% if bluetooth_status.min_rssi is not none %}
+        <p><b>RSSI-порог:</b> {{ bluetooth_status.min_rssi }} dBm</p>
+      {% endif %}
       {% if bluetooth_status.strongest_device %}
         <p><b>Самый сильный сигнал:</b> {{ bluetooth_status.strongest_device }}</p>
       {% endif %}
@@ -167,6 +178,38 @@ HTML = """
   </div>
 
   <div class="card">
+    <h2>Разрешенные устройства сейчас</h2>
+    {% if allowed_statuses %}
+      <table>
+        <thead>
+          <tr>
+            <th>Имя</th>
+            <th>MAC</th>
+            <th>Состояние</th>
+            <th>RSSI</th>
+            <th>Connected</th>
+            <th>Enabled</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for d in allowed_statuses %}
+            <tr>
+              <td>{{ d.name }}</td>
+              <td class="mono">{{ d.mac }}</td>
+              <td>{% if d.seen %}<span class="badge badge-ok">видно</span>{% else %}<span class="badge badge-bad">не видно</span>{% endif %}</td>
+              <td>{% if d.rssi is not none %}{{ d.rssi }} dBm{% else %}<span class="muted">n/a</span>{% endif %}</td>
+              <td>{% if d.connected %}<span class="badge badge-ok">yes</span>{% else %}<span class="badge">no</span>{% endif %}</td>
+              <td>{% if d.enabled %}<span class="badge badge-ok">yes</span>{% else %}<span class="badge">no</span>{% endif %}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="muted">Разрешенные устройства пока не добавлены.</p>
+    {% endif %}
+  </div>
+
+  <div class="card">
     <h2>Быстрые действия</h2>
     <form method="post" action="{{ url_for('manual_open') }}">
       <button type="submit">Открыть вручную</button>
@@ -177,12 +220,18 @@ HTML = """
     <form method="post" action="{{ url_for('restart_bluetooth') }}">
       <button type="submit">Перезапустить Bluetooth</button>
     </form>
+    <form method="post" action="{{ url_for('refresh_ble_status') }}">
+      <button type="submit">Обновить BLE-скан</button>
+    </form>
     <form id="sync-time-form" method="post" action="{{ url_for('sync_time') }}">
       <input type="hidden" id="sync-time-epoch" name="epoch" value="">
       <button type="submit">Синхронизировать время</button>
     </form>
     <form method="post" action="{{ url_for('backup_db_route') }}">
       <button type="submit">Сделать backup базы</button>
+    </form>
+    <form method="get" action="{{ url_for('diagnostic_report') }}">
+      <button type="submit">Скачать диагностику</button>
     </form>
   </div>
 
@@ -314,6 +363,17 @@ HTML = """
     document.getElementById('sync-time-form').addEventListener('submit', function () {
       document.getElementById('sync-time-epoch').value = Math.floor(Date.now() / 1000).toString();
     });
+    (function () {
+      var board = document.getElementById('board-time');
+      var drift = document.getElementById('time-drift');
+      if (!board || !drift) return;
+      var boardEpoch = parseInt(board.dataset.epoch || '0', 10);
+      if (!boardEpoch) return;
+      var diff = Math.round(Date.now() / 1000) - boardEpoch;
+      var abs = Math.abs(diff);
+      drift.textContent = 'браузер: ' + (diff >= 0 ? '+' : '-') + abs + ' сек';
+      if (abs > 30) drift.className = 'err small';
+    })();
   </script>
 </body>
 </html>
@@ -429,6 +489,55 @@ def board_time() -> str:
     return time.strftime("%Y-%m-%d %H:%M:%S")
 
 
+def bluetooth_status_for_view() -> dict[str, object] | None:
+    status = latest_bluetooth_status(config.db_path)
+    if status is None:
+        return None
+
+    updated_at = str(status.get("updated_at") or "")
+    age_seconds = None
+    try:
+        updated_dt = datetime.strptime(updated_at, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+        age_seconds = max(0, int((datetime.now(timezone.utc) - updated_dt).total_seconds()))
+    except ValueError:
+        pass
+
+    if age_seconds is None:
+        age_label = "возраст неизвестен"
+    elif age_seconds < 60:
+        age_label = f"{age_seconds} сек назад"
+    else:
+        age_label = f"{age_seconds // 60} мин назад"
+
+    status["age_seconds"] = age_seconds
+    status["age_label"] = age_label
+    return status
+
+
+def allowed_device_statuses(devices: list[tuple], bluetooth_status: dict[str, object] | None) -> list[dict[str, object]]:
+    visible_by_mac: dict[str, dict[str, object]] = {}
+    if bluetooth_status:
+        for device in bluetooth_status.get("devices", []):
+            if isinstance(device, dict) and device.get("mac"):
+                visible_by_mac[normalize_mac(str(device["mac"]))] = device
+
+    rows = []
+    for _row_id, name, mac, enabled in devices:
+        normalized_mac = normalize_mac(mac)
+        visible = visible_by_mac.get(normalized_mac)
+        rows.append(
+            {
+                "name": name,
+                "mac": normalized_mac,
+                "enabled": bool(enabled),
+                "seen": visible is not None,
+                "rssi": visible.get("rssi") if visible else None,
+                "connected": bool(visible.get("connected")) if visible else False,
+            }
+        )
+    return rows
+
+
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if not auth_enabled():
@@ -458,10 +567,13 @@ def index():
     message = request.args.get("message", "")
     success = request.args.get("success", "1") == "1"
     total_devices, enabled_devices = device_counts(config.db_path)
+    devices = list_devices(config.db_path)
+    bluetooth_status = bluetooth_status_for_view()
     return render_template_string(
         HTML,
         auth_enabled=auth_enabled(),
-        devices=list_devices(config.db_path),
+        devices=devices,
+        allowed_statuses=allowed_device_statuses(devices, bluetooth_status),
         events=recent_events(config.db_path, 20),
         message=message,
         success=success,
@@ -471,8 +583,9 @@ def index():
         relay_port=config.relay_port,
         ip_addresses=ip_addresses(),
         board_time=board_time(),
+        board_time_epoch=int(time.time()),
         services=service_statuses(),
-        bluetooth_status=latest_bluetooth_status(config.db_path),
+        bluetooth_status=bluetooth_status,
     )
 
 
@@ -525,6 +638,54 @@ def manual_open():
 def backup_db_route():
     log_panel_event("backup-db-request", "Запрос backup базы")
     return run_and_redirect(["backup-db"])
+
+
+@app.route("/refresh-ble", methods=["POST"])
+@login_required
+def refresh_ble_status():
+    log_panel_event("refresh-ble-request", "Запрос ручного BLE-скана")
+    return run_and_redirect(["scan-status"], "BLE-статус обновлен")
+
+
+@app.route("/diagnostic-report", methods=["GET"])
+@login_required
+def diagnostic_report():
+    init_db(config.db_path)
+    checks = [
+        ("date", ["date"]),
+        ("timedatectl", ["timedatectl", "status"]),
+        ("hostname -I", ["hostname", "-I"]),
+        ("bluetoothctl show", ["bluetoothctl", "show"]),
+        ("barrier.service", ["systemctl", "status", "barrier.service", "--no-pager"]),
+        ("barrier-panel.service", ["systemctl", "status", "barrier-panel.service", "--no-pager"]),
+        ("watchdog timer", ["systemctl", "status", "barrier-bluetooth-watchdog.timer", "--no-pager"]),
+    ]
+
+    lines = ["Barrier diagnostic report", f"Generated at: {board_time()}", ""]
+    lines.append("Allowed devices:")
+    for row in list_devices(config.db_path):
+        lines.append(f"- {row[1]} | {row[2]} | {'enabled' if row[3] else 'disabled'}")
+
+    lines.append("")
+    lines.append("Latest BLE status:")
+    status = bluetooth_status_for_view()
+    lines.append(str(status or "No BLE status yet"))
+
+    for title, cmd in checks:
+        ok, output = run_command(cmd, timeout=15)
+        lines.extend(["", f"## {title}", f"ok={ok}", output or "(no output)"])
+
+    lines.append("")
+    lines.append("Recent events:")
+    for event in recent_events(config.db_path, 30):
+        lines.append(f"{event[1]} | {event[2]} | {event[3]} | {event[4]} | {event[5]}")
+
+    body = "\n".join(lines) + "\n"
+    return Response(
+        body,
+        mimetype="text/plain; charset=utf-8",
+        headers={"Content-Disposition": "attachment; filename=barrier-diagnostic.txt"},
+    )
 
 
 @app.route("/sync-time", methods=["POST"])

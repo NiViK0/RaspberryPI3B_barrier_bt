@@ -54,11 +54,27 @@ def init_db(db_path: str) -> None:
                 strongest_device TEXT NOT NULL DEFAULT '',
                 devices_json TEXT NOT NULL DEFAULT '[]',
                 raw_output TEXT NOT NULL DEFAULT '',
-                error TEXT NOT NULL DEFAULT ''
+                error TEXT NOT NULL DEFAULT '',
+                presence_status TEXT NOT NULL DEFAULT 'unknown',
+                missing_count INTEGER NOT NULL DEFAULT 0,
+                missing_threshold INTEGER NOT NULL DEFAULT 0,
+                min_rssi INTEGER,
+                allowed_present INTEGER NOT NULL DEFAULT 0
             )
             """
         )
+        ensure_column(conn, "bluetooth_status", "presence_status", "TEXT NOT NULL DEFAULT 'unknown'")
+        ensure_column(conn, "bluetooth_status", "missing_count", "INTEGER NOT NULL DEFAULT 0")
+        ensure_column(conn, "bluetooth_status", "missing_threshold", "INTEGER NOT NULL DEFAULT 0")
+        ensure_column(conn, "bluetooth_status", "min_rssi", "INTEGER")
+        ensure_column(conn, "bluetooth_status", "allowed_present", "INTEGER NOT NULL DEFAULT 0")
         conn.commit()
+
+
+def ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+    columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in columns:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
 def add_device(db_path: str, mac: str, name: str) -> None:
@@ -170,15 +186,21 @@ def save_bluetooth_status(
     devices: list[dict[str, object]],
     raw_output: str,
     error: str = "",
+    presence_status: str = "unknown",
+    missing_count: int = 0,
+    missing_threshold: int = 0,
+    min_rssi: int | None = None,
+    allowed_present: bool = False,
 ) -> None:
     with closing(sqlite3.connect(db_path)) as conn:
         conn.execute(
             """
             INSERT INTO bluetooth_status(
                 id, updated_at, status, total_devices, connected_devices,
-                allowed_seen, max_rssi, strongest_device, devices_json, raw_output, error
+                allowed_seen, max_rssi, strongest_device, devices_json, raw_output, error,
+                presence_status, missing_count, missing_threshold, min_rssi, allowed_present
             )
-            VALUES (1, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (1, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 updated_at = excluded.updated_at,
                 status = excluded.status,
@@ -189,7 +211,12 @@ def save_bluetooth_status(
                 strongest_device = excluded.strongest_device,
                 devices_json = excluded.devices_json,
                 raw_output = excluded.raw_output,
-                error = excluded.error
+                error = excluded.error,
+                presence_status = excluded.presence_status,
+                missing_count = excluded.missing_count,
+                missing_threshold = excluded.missing_threshold,
+                min_rssi = excluded.min_rssi,
+                allowed_present = excluded.allowed_present
             """,
             (
                 status,
@@ -201,6 +228,11 @@ def save_bluetooth_status(
                 json.dumps(devices, ensure_ascii=False),
                 raw_output,
                 error,
+                presence_status,
+                missing_count,
+                missing_threshold,
+                min_rssi,
+                1 if allowed_present else 0,
             ),
         )
         conn.commit()
@@ -211,7 +243,8 @@ def latest_bluetooth_status(db_path: str) -> dict[str, object] | None:
         row: BluetoothStatusRow | None = conn.execute(
             """
             SELECT id, updated_at, status, total_devices, connected_devices,
-                   allowed_seen, max_rssi, strongest_device, devices_json, raw_output, error
+                   allowed_seen, max_rssi, strongest_device, devices_json, raw_output, error,
+                   presence_status, missing_count, missing_threshold, min_rssi, allowed_present
             FROM bluetooth_status
             WHERE id = 1
             """
@@ -237,6 +270,11 @@ def latest_bluetooth_status(db_path: str) -> dict[str, object] | None:
         "devices": devices,
         "raw_output": row[9],
         "error": row[10],
+        "presence_status": row[11],
+        "missing_count": row[12],
+        "missing_threshold": row[13],
+        "min_rssi": row[14],
+        "allowed_present": bool(row[15]),
     }
 
 

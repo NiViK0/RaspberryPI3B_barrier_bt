@@ -4,7 +4,7 @@ import os
 import gc
 import time
 
-from barrier_bluetooth import apply_device_info, parse_devices_output
+from barrier_bluetooth import apply_device_info, detect_allowed_presence_from_details, parse_devices_output
 from barrier_config import Config
 from barrier_db import init_db, latest_bluetooth_status, normalize_mac, save_bluetooth_status
 from barrier_presence import detect_any_target_presence, process_presence, validate_mac
@@ -35,6 +35,7 @@ def make_config() -> Config:
         cooldown=0,
         pulse_time=0,
         missing_threshold=2,
+        min_rssi=None,
         relay_on_cmd=b"on",
         relay_off_cmd=b"off",
         host="127.0.0.1",
@@ -98,6 +99,15 @@ class PresenceTests(unittest.TestCase):
         self.assertTrue(devices[0]["connected"])
         self.assertEqual(devices[0]["rssi"], -58)
 
+    def test_detect_presence_respects_rssi_threshold(self) -> None:
+        devices = [
+            {"mac": "AA:BB:CC:DD:EE:FF", "allowed": True, "rssi": -90},
+            {"mac": "11:22:33:44:55:66", "allowed": False, "rssi": -40},
+        ]
+        self.assertEqual(detect_allowed_presence_from_details(devices), PresenceStatus.PRESENT)
+        self.assertEqual(detect_allowed_presence_from_details(devices, -80), PresenceStatus.ABSENT)
+        self.assertEqual(detect_allowed_presence_from_details(devices, -95), PresenceStatus.PRESENT)
+
     def test_bluetooth_status_roundtrip(self) -> None:
         config = make_config()
         db_file = tempfile.NamedTemporaryFile(suffix=".db", dir=".", delete=False)
@@ -117,6 +127,11 @@ class PresenceTests(unittest.TestCase):
             "Phone (AA:BB:CC:DD:EE:FF)",
             [{"mac": "AA:BB:CC:DD:EE:FF", "name": "Phone", "connected": True, "rssi": -58, "allowed": True}],
             "Device AA:BB:CC:DD:EE:FF Phone",
+            presence_status="present",
+            missing_count=0,
+            missing_threshold=2,
+            min_rssi=-80,
+            allowed_present=True,
         )
 
         status = latest_bluetooth_status(config.db_path)
@@ -125,6 +140,9 @@ class PresenceTests(unittest.TestCase):
         self.assertEqual(status["total_devices"], 1)
         self.assertEqual(status["connected_devices"], 1)
         self.assertEqual(status["max_rssi"], -58)
+        self.assertEqual(status["presence_status"], "present")
+        self.assertEqual(status["min_rssi"], -80)
+        self.assertTrue(status["allowed_present"])
 
 
 if __name__ == "__main__":

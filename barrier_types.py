@@ -4,7 +4,7 @@ from enum import Enum, auto
 
 DeviceRow = tuple[int, str, str, int]
 EventRow = tuple[int, str, str, str, str, str]
-BluetoothStatusRow = tuple[int, str, str, int, int, int, int | None, str, str, str, str]
+BluetoothStatusRow = tuple[int, str, str, int, int, int, int | None, str, str, str, str, str, int, int, int | None, int]
 
 
 class PresenceStatus(Enum):

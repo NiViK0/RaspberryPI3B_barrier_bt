@@ -9,6 +9,13 @@ def _env_int(name: str, default: int) -> int:
     return int(value)
 
 
+def _env_optional_int(name: str) -> int | None:
+    value = os.getenv(name)
+    if value is None or value == "":
+        return None
+    return int(value)
+
+
 def _env_bool(name: str, default: bool = False) -> bool:
     value = os.getenv(name)
     if value is None or value == "":
@@ -31,6 +38,7 @@ class Config:
     cooldown: int
     pulse_time: int
     missing_threshold: int
+    min_rssi: int | None
 
     relay_on_cmd: bytes
     relay_off_cmd: bytes
@@ -54,6 +62,7 @@ def load_config() -> Config:
         cooldown=_env_int("BARRIER_COOLDOWN", 15),
         pulse_time=_env_int("BARRIER_PULSE_TIME", 2),
         missing_threshold=_env_int("BARRIER_MISSING_THRESHOLD", 3),
+        min_rssi=_env_optional_int("BARRIER_MIN_RSSI"),
         relay_on_cmd=b"\xA0\x01\x01\xA2",
         relay_off_cmd=b"\xA0\x01\x00\xA1",
         host=os.getenv("BARRIER_PANEL_HOST", "0.0.0.0"),
