@@ -2,6 +2,7 @@
 import secrets
 import subprocess
 import sys
+import time
 from functools import wraps
 
 from flask import Flask, redirect, render_template_string, request, session, url_for
@@ -104,6 +105,7 @@ HTML = """
       <div class="stat"><span class="muted">База</span><strong>{{ db_path }}</strong></div>
       <div class="stat"><span class="muted">Реле</span><strong>{{ relay_port }}</strong></div>
       <div class="stat"><span class="muted">IP</span><strong>{{ ip_addresses }}</strong></div>
+      <div class="stat"><span class="muted">Время платы</span><strong>{{ board_time }}</strong></div>
     </div>
   </div>
 
@@ -174,6 +176,10 @@ HTML = """
     </form>
     <form method="post" action="{{ url_for('restart_bluetooth') }}">
       <button type="submit">Перезапустить Bluetooth</button>
+    </form>
+    <form id="sync-time-form" method="post" action="{{ url_for('sync_time') }}">
+      <input type="hidden" id="sync-time-epoch" name="epoch" value="">
+      <button type="submit">Синхронизировать время</button>
     </form>
     <form method="post" action="{{ url_for('backup_db_route') }}">
       <button type="submit">Сделать backup базы</button>
@@ -304,6 +310,11 @@ HTML = """
       <p class="muted">Событий пока нет.</p>
     {% endif %}
   </div>
+  <script>
+    document.getElementById('sync-time-form').addEventListener('submit', function () {
+      document.getElementById('sync-time-epoch').value = Math.floor(Date.now() / 1000).toString();
+    });
+  </script>
 </body>
 </html>
 """
@@ -411,6 +422,13 @@ def ip_addresses() -> str:
     return "unknown"
 
 
+def board_time() -> str:
+    ok, output = run_command(["date", "+%Y-%m-%d %H:%M:%S %Z"], timeout=5)
+    if ok and output:
+        return output
+    return time.strftime("%Y-%m-%d %H:%M:%S")
+
+
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if not auth_enabled():
@@ -452,6 +470,7 @@ def index():
         db_path=config.db_path,
         relay_port=config.relay_port,
         ip_addresses=ip_addresses(),
+        board_time=board_time(),
         services=service_statuses(),
         bluetooth_status=latest_bluetooth_status(config.db_path),
     )
@@ -506,6 +525,26 @@ def manual_open():
 def backup_db_route():
     log_panel_event("backup-db-request", "Запрос backup базы")
     return run_and_redirect(["backup-db"])
+
+
+@app.route("/sync-time", methods=["POST"])
+@login_required
+def sync_time():
+    epoch_raw = request.form.get("epoch", "").strip()
+    try:
+        epoch = int(epoch_raw)
+    except ValueError:
+        return redirect_with_result(False, "Некорректное время браузера")
+
+    min_epoch = 1704067200  # 2024-01-01T00:00:00Z
+    max_epoch = 1893456000  # 2030-01-01T00:00:00Z
+    if epoch < min_epoch or epoch > max_epoch:
+        return redirect_with_result(False, f"Подозрительное время браузера: {epoch}")
+
+    ok, output = run_command(["sudo", "/usr/local/bin/barrier-set-time", str(epoch)], timeout=15)
+    message = output or "Время платы синхронизировано с браузером"
+    log_panel_event("sync-time", message, "INFO" if ok else "ERROR")
+    return redirect_with_result(ok, message)
 
 
 @app.route("/management/<action>", methods=["POST"])

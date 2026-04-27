@@ -93,7 +93,7 @@ fetch_repo() {
 check_repo_files() {
   local missing=0
 
-  for f in barrier_service.py panel.py scripts/bluetooth_watchdog.sh scripts/barrier_open.sh scripts/setup_wifi_ap.sh scripts/setup_ethernet_static.sh; do
+  for f in barrier_service.py panel.py scripts/bluetooth_watchdog.sh scripts/barrier_open.sh scripts/barrier_set_time.sh scripts/setup_wifi_ap.sh scripts/setup_ethernet_static.sh; do
     if [[ ! -f "${SRC_DIR}/${f}" ]]; then
       err "Не найден файл ${SRC_DIR}/${f}"
       missing=1
@@ -119,6 +119,7 @@ prepare_scripts() {
   log "Настраиваю исполняемые скрипты"
   chmod +x "${SRC_DIR}/scripts/bluetooth_watchdog.sh"
   chmod +x "${SRC_DIR}/scripts/barrier_open.sh"
+  chmod +x "${SRC_DIR}/scripts/barrier_set_time.sh"
   chmod +x "${SRC_DIR}/scripts/setup_wifi_ap.sh"
   chmod +x "${SRC_DIR}/scripts/setup_ethernet_static.sh"
 }
@@ -126,6 +127,11 @@ prepare_scripts() {
 install_emergency_open_wrapper() {
   log "Устанавливаю аварийную команду /usr/local/bin/barrier-open"
   install -m 0755 "${SRC_DIR}/scripts/barrier_open.sh" /usr/local/bin/barrier-open
+}
+
+install_time_sync_wrapper() {
+  log "Устанавливаю команду синхронизации времени /usr/local/bin/barrier-set-time"
+  install -m 0755 "${SRC_DIR}/scripts/barrier_set_time.sh" /usr/local/bin/barrier-set-time
 }
 
 create_venv() {
@@ -260,6 +266,7 @@ write_panel_sudoers() {
   log "Настраиваю sudo-доступ web-панели к ограниченным management-командам"
   cat > "$PANEL_SUDOERS_FILE" <<EOF
 ${SERVICE_USER} ALL=(root) NOPASSWD: /usr/bin/systemctl restart bluetooth, /usr/bin/systemctl restart barrier.service, /usr/bin/systemctl restart barrier-bluetooth-watchdog.timer, /usr/bin/systemctl start barrier-bluetooth-watchdog.service, /usr/bin/systemctl reboot, /bin/systemctl restart bluetooth, /bin/systemctl restart barrier.service, /bin/systemctl restart barrier-bluetooth-watchdog.timer, /bin/systemctl start barrier-bluetooth-watchdog.service, /bin/systemctl reboot
+${SERVICE_USER} ALL=(root) NOPASSWD: /usr/local/bin/barrier-set-time *
 EOF
 
   chmod 0440 "$PANEL_SUDOERS_FILE"
@@ -337,6 +344,7 @@ main() {
   prepare_scripts
   create_venv
   install_emergency_open_wrapper
+  install_time_sync_wrapper
   enable_bluetooth
   grant_serial_access
   init_database
