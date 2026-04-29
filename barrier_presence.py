@@ -24,17 +24,16 @@ def detect_any_target_presence(devices_output: str, allowed_macs: list[str]) -> 
 
 
 def trigger_barrier(config: Config, state: State, action: str, trigger_action: TriggerAction) -> bool:
+    if action != "open":
+        logging.warning("Unsupported barrier action ignored: %s", action)
+        return False
+
     now = time.monotonic()
     if now - state.last_trigger_monotonic < config.cooldown:
         logging.info("Импульс '%s' заблокирован cooldown", action)
         return False
 
-    if action == "open":
-        logging.info(">>> Разрешённый телефон найден, открываем шлагбаум")
-    elif action == "close":
-        logging.info("<<< Телефон исчез, закрываем шлагбаум")
-    else:
-        logging.info("*** Выполняем действие: %s", action)
+    logging.info(">>> Разрешённый телефон найден, открываем шлагбаум")
 
     if not trigger_action(action):
         return False
@@ -76,9 +75,8 @@ def process_presence(
             config.missing_threshold,
         )
         if state.missing_count >= config.missing_threshold:
-            if trigger_barrier(config, state, "close", trigger_action):
-                state.any_device_was_present = False
-                state.missing_count = 0
+            state.any_device_was_present = False
+            state.missing_count = 0
     else:
         logging.info("Разрешённые устройства не найдены")
         state.missing_count = 0

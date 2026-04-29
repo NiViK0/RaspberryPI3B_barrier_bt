@@ -56,7 +56,7 @@ class PresenceTests(unittest.TestCase):
         status = detect_any_target_presence(output, ["aa:bb:cc:dd:ee:ff"])
         self.assertEqual(status, PresenceStatus.PRESENT)
 
-    def test_process_presence_opens_once_and_closes_after_threshold(self) -> None:
+    def test_process_presence_opens_once_and_clears_presence_after_threshold(self) -> None:
         config = make_config()
         state = State()
         actions: list[str] = []
@@ -70,7 +70,7 @@ class PresenceTests(unittest.TestCase):
         process_presence(PresenceStatus.ABSENT, "", config, state, trigger)
         process_presence(PresenceStatus.ABSENT, "", config, state, trigger)
 
-        self.assertEqual(actions, ["open", "close"])
+        self.assertEqual(actions, ["open"])
         self.assertFalse(state.any_device_was_present)
         self.assertEqual(state.missing_count, 0)
 
