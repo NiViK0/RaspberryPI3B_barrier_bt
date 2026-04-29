@@ -132,14 +132,14 @@ sudo \
 
 Если BLE-сервис не стартует сразу, это нормально: сначала может понадобиться добавить MAC-адрес телефона и проверить реле.
 
-### Установка релиза v1.4.0
+### Установка релиза v1.5.1
 
-Релиз `v1.4.0` добавляет BLE-диагностику в web-панель. Новая таблица SQLite создается автоматически при запуске `install.sh` или `barrier_service.py init-db`, миграций вручную делать не нужно.
+Релиз `v1.5.1` убирает автоматический импульс закрытия: BLE-сервис теперь отправляет реле только команду открытия, а закрытие остается за штатным контроллером шлагбаума. Миграций SQLite вручную делать не нужно.
 
 Если на плате есть интернет:
 
 ```bash
-git clone --branch v1.4.0 https://github.com/NiViK0/RaspberryPI3B_barrier_bt.git /tmp/barrier
+git clone --branch v1.5.1 https://github.com/NiViK0/RaspberryPI3B_barrier_bt.git /tmp/barrier
 cd /tmp/barrier
 sudo bash install.sh
 ```
@@ -149,7 +149,7 @@ sudo bash install.sh
 ```bash
 cd /opt/barrier/src
 git fetch --tags origin
-git checkout v1.4.0
+git checkout v1.5.1
 /opt/barrier/venv/bin/python /opt/barrier/src/barrier_service.py init-db
 sudo systemctl restart barrier.service barrier-panel.service
 ```
