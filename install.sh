@@ -93,7 +93,7 @@ fetch_repo() {
 check_repo_files() {
   local missing=0
 
-  for f in barrier_service.py barrier_wifi.py panel.py scripts/bluetooth_watchdog.sh scripts/barrier_open.sh scripts/barrier_set_time.sh scripts/setup_wifi_ap.sh scripts/setup_ethernet_static.sh; do
+  for f in barrier_service.py barrier_wifi.py panel.py scripts/bluetooth_watchdog.sh scripts/barrier_open.sh scripts/barrier_set_time.sh scripts/setup_wifi_ap.sh scripts/setup_ethernet_static.sh scripts/make_runtime_update.ps1; do
     if [[ ! -f "${SRC_DIR}/${f}" ]]; then
       err "Не найден файл ${SRC_DIR}/${f}"
       missing=1

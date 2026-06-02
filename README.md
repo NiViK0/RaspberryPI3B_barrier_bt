@@ -143,14 +143,14 @@ sudo \
 
 Если сервис не стартует сразу, это нормально: сначала может понадобиться добавить MAC-адрес телефона, проверить реле или включить нужный источник обнаружения.
 
-### Установка релиза v1.6.0
+### Установка релиза v1.6.1
 
-Релиз `v1.6.0` добавляет автооткрытие по Wi-Fi: телефон подключается к точке доступа платы, сервис видит разрешенный Wi-Fi MAC через `iw station dump` и отправляет импульс открытия через тот же cooldown, что и BLE. BLE остается включенным по умолчанию, а Wi-Fi-режим включается переменной `BARRIER_WIFI_AUTO_OPEN=true`. SQLite-миграция для `wifi_status` выполняется автоматически через `init-db`.
+Релиз `v1.6.1` добавляет удобный runtime-update скрипт `scripts/make_runtime_update.ps1` для обновления уже установленной платы без `pip`, `wheelhouse` и переустановки virtualenv. Также в релиз входит автооткрытие по Wi-Fi из `v1.6.0`: телефон подключается к точке доступа платы, сервис видит разрешенный Wi-Fi MAC через `iw station dump` и отправляет импульс открытия через тот же cooldown, что и BLE. BLE остается включенным по умолчанию, а Wi-Fi-режим включается переменной `BARRIER_WIFI_AUTO_OPEN=true`. SQLite-миграция для `wifi_status` выполняется автоматически через `init-db`.
 
 Если на плате есть интернет:
 
 ```bash
-git clone --branch v1.6.0 https://github.com/NiViK0/RaspberryPI3B_barrier_bt.git /tmp/barrier
+git clone --branch v1.6.1 https://github.com/NiViK0/RaspberryPI3B_barrier_bt.git /tmp/barrier
 cd /tmp/barrier
 sudo bash install.sh
 ```
@@ -160,7 +160,7 @@ sudo bash install.sh
 ```bash
 cd /opt/barrier/src
 git fetch --tags origin
-git checkout v1.6.0
+git checkout v1.6.1
 /opt/barrier/venv/bin/python /opt/barrier/src/barrier_service.py init-db
 sudo systemctl restart barrier.service barrier-panel.service
 ```
@@ -227,6 +227,42 @@ sudo \
 `INSTALL_FROM_LOCAL=1` отключает клонирование из GitHub и копирует исходники из `LOCAL_SOURCE_DIR` в `/opt/barrier/src`. `PIP_OFFLINE=1` запрещает pip ходить в интернет и ставит зависимости только из `WHEELHOUSE_DIR`.
 
 Если wheel-файлы готовятся на Windows, а плата использует другую архитектуру, pip может отказаться ставить отдельные бинарные зависимости. В таком случае подготовьте `wheelhouse` на Linux/Raspberry Pi той же архитектуры с доступом в интернет и перенесите папку на рабочую плату по SFTP.
+
+### Runtime-обновление без pip
+
+Если плата уже установлена и нужно обновить только код, используйте runtime-архив. Этот сценарий не скачивает Python-зависимости, не собирает `wheelhouse` и не переустанавливает virtualenv.
+
+На компьютере с проектом:
+
+```powershell
+PowerShell -ExecutionPolicy Bypass -File scripts/make_runtime_update.ps1 -Version v1.6.1 -RemoteHost IP_ПЛАТЫ
+scp deploy/barrier-v1.6.1-runtime-update.tar.gz ltpibarrier@IP_ПЛАТЫ:/tmp/barrier-v1.6.1-runtime-update.tar.gz
+```
+
+На Raspberry Pi:
+
+```bash
+rm -rf /tmp/barrier-v1.6.1-runtime-update
+mkdir -p /tmp/barrier-v1.6.1-runtime-update
+tar -xzf /tmp/barrier-v1.6.1-runtime-update.tar.gz -C /tmp/barrier-v1.6.1-runtime-update
+find /tmp/barrier-v1.6.1-runtime-update -name '*.sh' -exec sed -i 's/\r$//' {} +
+
+sudo cp -a /opt/barrier/src "/opt/barrier/src.backup.$(date +%Y%m%d-%H%M%S)"
+sudo cp -a /opt/barrier/barrier.db "/opt/barrier/barrier.db.backup.$(date +%Y%m%d-%H%M%S)"
+sudo rsync -a --delete \
+  --exclude '.git' \
+  --exclude 'deploy' \
+  --exclude 'archive' \
+  /tmp/barrier-v1.6.1-runtime-update/ \
+  /opt/barrier/src/
+
+sudo chown -R ltpibarrier:ltpibarrier /opt/barrier/src
+sudo chmod +x /opt/barrier/src/scripts/*.sh
+/opt/barrier/venv/bin/python /opt/barrier/src/barrier_service.py init-db
+sudo systemctl restart barrier.service barrier-panel.service
+```
+
+Если обновление добавляет новые системные пакеты, например `iw` для Wi-Fi-автооткрытия, их нужно поставить отдельно. Runtime-архив обновляет только код и SQLite-схему.
 
 ## Переменные окружения
 
@@ -995,29 +1031,32 @@ journalctl -u barrier-bluetooth-watchdog.service -f
 
 ## Обновление
 
-Если у платы нет интернета, обновляйте так же, как устанавливали: соберите свежий архив на компьютере, передайте его по SSH/SFTP и повторно запустите `install.sh` в локальном режиме.
+Если у платы нет интернета и система уже установлена, обновляйте код runtime-архивом. Этот способ не вызывает `pip` и не требует wheel-файлов.
 
-```bash
+```powershell
 cd RaspberryPI3B_barrier_bt
-PowerShell -ExecutionPolicy Bypass -File scripts/make_offline_deploy.ps1
-scp deploy/barrier-deploy.tar.gz ltpibarrier@IP_ПЛАТЫ:/tmp/barrier-deploy.tar.gz
-scp -r deploy/wheelhouse ltpibarrier@IP_ПЛАТЫ:/tmp/barrier-wheelhouse
+PowerShell -ExecutionPolicy Bypass -File scripts/make_runtime_update.ps1 -Version v1.6.1 -RemoteHost IP_ПЛАТЫ
+scp deploy/barrier-v1.6.1-runtime-update.tar.gz ltpibarrier@IP_ПЛАТЫ:/tmp/barrier-v1.6.1-runtime-update.tar.gz
 ```
 
 На Raspberry Pi:
 
 ```bash
-rm -rf /tmp/barrier-deploy-current
-mkdir -p /tmp/barrier-deploy-current
-tar -xzf /tmp/barrier-deploy.tar.gz -C /tmp/barrier-deploy-current
-sudo \
-  INSTALL_FROM_LOCAL=1 \
-  LOCAL_SOURCE_DIR=/tmp/barrier-deploy-current \
-  INSTALL_SYSTEM_PACKAGES=0 \
-  PIP_OFFLINE=1 \
-  WHEELHOUSE_DIR=/tmp/barrier-wheelhouse \
-  bash /tmp/barrier-deploy-current/install.sh
+rm -rf /tmp/barrier-v1.6.1-runtime-update
+mkdir -p /tmp/barrier-v1.6.1-runtime-update
+tar -xzf /tmp/barrier-v1.6.1-runtime-update.tar.gz -C /tmp/barrier-v1.6.1-runtime-update
+find /tmp/barrier-v1.6.1-runtime-update -name '*.sh' -exec sed -i 's/\r$//' {} +
+
+sudo cp -a /opt/barrier/src "/opt/barrier/src.backup.$(date +%Y%m%d-%H%M%S)"
+sudo cp -a /opt/barrier/barrier.db "/opt/barrier/barrier.db.backup.$(date +%Y%m%d-%H%M%S)"
+sudo rsync -a --delete --exclude '.git' --exclude 'deploy' --exclude 'archive' /tmp/barrier-v1.6.1-runtime-update/ /opt/barrier/src/
+sudo chown -R ltpibarrier:ltpibarrier /opt/barrier/src
+sudo chmod +x /opt/barrier/src/scripts/*.sh
+/opt/barrier/venv/bin/python /opt/barrier/src/barrier_service.py init-db
+sudo systemctl restart barrier.service barrier-panel.service
 ```
+
+Для первой установки или переустановки virtualenv используйте полный офлайн-сценарий `scripts/make_offline_deploy.ps1` с `wheelhouse`.
 
 Если на плате есть интернет, можно обновить через git:
 
