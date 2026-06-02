@@ -29,6 +29,8 @@ class Config:
     barrier_script: str
     backup_dir: str
 
+    bluetooth_enabled: bool
+
     relay_port: str
     relay_baudrate: int
     dry_run: bool
@@ -48,12 +50,19 @@ class Config:
     panel_password: str
     flask_secret_key: str
 
+    wifi_auto_open: bool
+    wifi_interface: str
+    wifi_min_signal: int | None
+    wifi_max_inactive_ms: int | None
+    wifi_leases_path: str
+
 
 def load_config() -> Config:
     return Config(
         db_path=os.getenv("BARRIER_DB_PATH", "/opt/barrier/barrier.db"),
         barrier_script=os.getenv("BARRIER_SCRIPT", "/opt/barrier/barrier_service.py"),
         backup_dir=os.getenv("BARRIER_BACKUP_DIR", "/opt/barrier/backups"),
+        bluetooth_enabled=_env_bool("BARRIER_BLUETOOTH_ENABLED", True),
         relay_port=os.getenv("BARRIER_RELAY_PORT", "/dev/ttyUSB0"),
         relay_baudrate=_env_int("BARRIER_RELAY_BAUDRATE", 9600),
         dry_run=_env_bool("BARRIER_DRY_RUN", False),
@@ -69,4 +78,9 @@ def load_config() -> Config:
         port=_env_int("BARRIER_PANEL_PORT", 8080),
         panel_password=os.getenv("BARRIER_PANEL_PASSWORD", ""),
         flask_secret_key=os.getenv("BARRIER_FLASK_SECRET_KEY", "barrier-panel-local-secret"),
+        wifi_auto_open=_env_bool("BARRIER_WIFI_AUTO_OPEN", False),
+        wifi_interface=os.getenv("BARRIER_WIFI_INTERFACE", "wlan0"),
+        wifi_min_signal=_env_optional_int("BARRIER_WIFI_MIN_SIGNAL"),
+        wifi_max_inactive_ms=_env_int("BARRIER_WIFI_MAX_INACTIVE_MS", 60000),
+        wifi_leases_path=os.getenv("BARRIER_WIFI_LEASES_PATH", "/var/lib/misc/dnsmasq.leases"),
     )

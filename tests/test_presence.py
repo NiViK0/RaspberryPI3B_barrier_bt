@@ -6,9 +6,10 @@ import time
 
 from barrier_bluetooth import apply_device_info, detect_allowed_presence_from_details, parse_devices_output
 from barrier_config import Config
-from barrier_db import init_db, latest_bluetooth_status, normalize_mac, save_bluetooth_status
+from barrier_db import init_db, latest_bluetooth_status, latest_wifi_status, normalize_mac, save_bluetooth_status, save_wifi_status
 from barrier_presence import detect_any_target_presence, process_presence, validate_mac
 from barrier_types import PresenceStatus, State
+from barrier_wifi import detect_allowed_wifi_presence, parse_iw_station_dump
 
 
 def remove_if_unlocked(path: str) -> None:
@@ -27,6 +28,7 @@ def make_config() -> Config:
         db_path=":memory:",
         barrier_script="barrier_service.py",
         backup_dir="backups",
+        bluetooth_enabled=True,
         relay_port="dry-run",
         relay_baudrate=9600,
         dry_run=True,
@@ -42,6 +44,11 @@ def make_config() -> Config:
         port=8080,
         panel_password="",
         flask_secret_key="test",
+        wifi_auto_open=False,
+        wifi_interface="wlan0",
+        wifi_min_signal=None,
+        wifi_max_inactive_ms=60000,
+        wifi_leases_path="/var/lib/misc/dnsmasq.leases",
     )
 
 
@@ -108,6 +115,29 @@ class PresenceTests(unittest.TestCase):
         self.assertEqual(detect_allowed_presence_from_details(devices, -80), PresenceStatus.ABSENT)
         self.assertEqual(detect_allowed_presence_from_details(devices, -95), PresenceStatus.PRESENT)
 
+    def test_parse_wifi_stations_and_presence_filters(self) -> None:
+        output = """
+Station aa:bb:cc:dd:ee:ff (on wlan0)
+        inactive time:  120 ms
+        rx bytes:       1234
+        tx bytes:       5678
+        signal:         -54 dBm
+        authorized:     yes
+Station 11:22:33:44:55:66 (on wlan0)
+        inactive time:  90000 ms
+        signal:         -80 dBm
+"""
+        stations = parse_iw_station_dump(output)
+        self.assertEqual(stations[0]["mac"], "AA:BB:CC:DD:EE:FF")
+        self.assertEqual(stations[0]["signal"], -54)
+        self.assertEqual(stations[0]["inactive_ms"], 120)
+
+        stations[0]["allowed"] = True
+        stations[1]["allowed"] = True
+        self.assertEqual(detect_allowed_wifi_presence(stations, -70, 60000), PresenceStatus.PRESENT)
+        self.assertEqual(detect_allowed_wifi_presence(stations, -50, 60000), PresenceStatus.ABSENT)
+        self.assertEqual(detect_allowed_wifi_presence([stations[1]], -90, 60000), PresenceStatus.ABSENT)
+
     def test_bluetooth_status_roundtrip(self) -> None:
         config = make_config()
         db_file = tempfile.NamedTemporaryFile(suffix=".db", dir=".", delete=False)
@@ -142,6 +172,52 @@ class PresenceTests(unittest.TestCase):
         self.assertEqual(status["max_rssi"], -58)
         self.assertEqual(status["presence_status"], "present")
         self.assertEqual(status["min_rssi"], -80)
+        self.assertTrue(status["allowed_present"])
+
+    def test_wifi_status_roundtrip(self) -> None:
+        config = make_config()
+        db_file = tempfile.NamedTemporaryFile(suffix=".db", dir=".", delete=False)
+        db_file.close()
+        self.addCleanup(remove_if_unlocked, db_file.name)
+        config = Config(
+            **{**config.__dict__, "db_path": db_file.name}
+        )
+        init_db(config.db_path)
+        save_wifi_status(
+            config.db_path,
+            "ok",
+            "wlan0",
+            1,
+            1,
+            -54,
+            "Phone (AA:BB:CC:DD:EE:FF)",
+            [
+                {
+                    "mac": "AA:BB:CC:DD:EE:FF",
+                    "name": "Phone",
+                    "signal": -54,
+                    "inactive_ms": 120,
+                    "allowed": True,
+                    "active": True,
+                }
+            ],
+            "Station AA:BB:CC:DD:EE:FF (on wlan0)",
+            presence_status="present",
+            missing_count=0,
+            missing_threshold=2,
+            min_signal=-70,
+            max_inactive_ms=60000,
+            allowed_present=True,
+        )
+
+        status = latest_wifi_status(config.db_path)
+        self.assertIsNotNone(status)
+        assert status is not None
+        self.assertEqual(status["interface"], "wlan0")
+        self.assertEqual(status["connected_devices"], 1)
+        self.assertEqual(status["max_signal"], -54)
+        self.assertEqual(status["presence_status"], "present")
+        self.assertEqual(status["min_signal"], -70)
         self.assertTrue(status["allowed_present"])
 
 

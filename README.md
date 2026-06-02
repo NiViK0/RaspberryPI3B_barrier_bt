@@ -1,6 +1,6 @@
 # Barrier BLE Controller
 
-Сервис для управления шлагбаумом с Raspberry Pi или другого Linux-одноплатника. Система ищет разрешенные Bluetooth/BLE-устройства по MAC-адресам, хранит список устройств в SQLite, управляет serial-реле и дает web-панель для управления с телефона.
+Сервис для управления шлагбаумом с Raspberry Pi или другого Linux-одноплатника. Система ищет разрешенные Bluetooth/BLE-устройства и/или подключенные Wi-Fi-устройства по MAC-адресам, хранит список устройств в SQLite, управляет serial-реле и дает web-панель для управления с телефона.
 
 ## Возможности
 
@@ -16,6 +16,8 @@
 - BLE-диагностика: время последнего скана, RSSI, количество видимых и подключенных устройств.
 - Web-статусы служб и кнопки управления платой.
 - Wi-Fi точка доступа для прямого подключения к плате.
+- Автооткрытие по Wi-Fi, когда разрешенный телефон подключился к точке доступа платы.
+- Wi-Fi-диагностика: подключенные станции, сигнал, неактивность, IP/hostname из DHCP leases.
 - Статический Ethernet-адрес для сервисного подключения.
 - Автозапуск через `systemd`.
 - Unit-тесты логики присутствия устройств.
@@ -28,6 +30,7 @@ panel.py                Flask web-панель
 barrier_config.py       Конфигурация из переменных окружения
 barrier_db.py           SQLite, устройства, события, backup
 barrier_bluetooth.py    Работа с bluetoothctl
+barrier_wifi.py         Обнаружение подключенных Wi-Fi-станций через iw
 barrier_relay.py        Serial-реле, dry-run, автоопределение порта
 barrier_presence.py     Логика присутствия устройства
 barrier_types.py        Общие типы и состояние
@@ -51,12 +54,20 @@ bluetoothctl scan
         v
 barrier_service.py
         |
-        +--> SQLite: allowed_devices, event_log, bluetooth_status
+        +--> SQLite: allowed_devices, event_log, bluetooth_status, wifi_status
         |
         +--> serial relay
         |
         v
 Шлагбаум
+
+Телефон, подключенный к Wi-Fi точки доступа платы
+        |
+        v
+iw dev wlan0 station dump
+        |
+        v
+barrier_service.py
 
 panel.py читает ту же SQLite-базу и вызывает barrier_service.py для команд управления.
 ```
@@ -99,7 +110,7 @@ sudo \
   bash /tmp/barrier-deploy-current/install.sh
 ```
 
-Если на плате уже установлены системные пакеты `git`, `python3`, `python3-pip`, `python3-venv`, `bluetooth`, `bluez`, `sqlite3`, можно пропустить `apt update` и `apt install`:
+Если на плате уже установлены системные пакеты `git`, `python3`, `python3-pip`, `python3-venv`, `bluetooth`, `bluez`, `sqlite3`, `iw`, можно пропустить `apt update` и `apt install`:
 
 ```bash
 sudo \
@@ -125,21 +136,21 @@ sudo \
 - создаст systemd-сервисы;
 - создаст Bluetooth watchdog timer;
 - установит `/usr/local/bin/barrier-set-time` для синхронизации времени из web-панели;
-- настроит ограниченные sudo-права для кнопок управления в web-панели;
+- настроит ограниченные sudo-права для кнопок управления в web-панели и чтения Wi-Fi-станций через `iw station dump`;
 - инициализирует SQLite-базу;
 - запустит web-панель;
-- попробует запустить BLE-сервис.
+- попробует запустить основной сервис обнаружения.
 
-Если BLE-сервис не стартует сразу, это нормально: сначала может понадобиться добавить MAC-адрес телефона и проверить реле.
+Если сервис не стартует сразу, это нормально: сначала может понадобиться добавить MAC-адрес телефона, проверить реле или включить нужный источник обнаружения.
 
-### Установка релиза v1.5.1
+### Установка релиза v1.6.0
 
-Релиз `v1.5.1` убирает автоматический импульс закрытия: BLE-сервис теперь отправляет реле только команду открытия, а закрытие остается за штатным контроллером шлагбаума. Миграций SQLite вручную делать не нужно.
+Релиз `v1.6.0` добавляет автооткрытие по Wi-Fi: телефон подключается к точке доступа платы, сервис видит разрешенный Wi-Fi MAC через `iw station dump` и отправляет импульс открытия через тот же cooldown, что и BLE. BLE остается включенным по умолчанию, а Wi-Fi-режим включается переменной `BARRIER_WIFI_AUTO_OPEN=true`. SQLite-миграция для `wifi_status` выполняется автоматически через `init-db`.
 
 Если на плате есть интернет:
 
 ```bash
-git clone --branch v1.5.1 https://github.com/NiViK0/RaspberryPI3B_barrier_bt.git /tmp/barrier
+git clone --branch v1.6.0 https://github.com/NiViK0/RaspberryPI3B_barrier_bt.git /tmp/barrier
 cd /tmp/barrier
 sudo bash install.sh
 ```
@@ -149,12 +160,12 @@ sudo bash install.sh
 ```bash
 cd /opt/barrier/src
 git fetch --tags origin
-git checkout v1.5.1
+git checkout v1.6.0
 /opt/barrier/venv/bin/python /opt/barrier/src/barrier_service.py init-db
 sudo systemctl restart barrier.service barrier-panel.service
 ```
 
-После перезапуска откройте web-панель и проверьте блок `BLE диагностика`. В нем должны появиться:
+После перезапуска откройте web-панель и проверьте блоки `BLE диагностика` и `Wi-Fi диагностика`. В BLE-блоке должны появиться:
 
 - время последнего BLE-скана;
 - количество видимых BLE-устройств;
@@ -163,7 +174,25 @@ sudo systemctl restart barrier.service barrier-panel.service
 - лучший RSSI в dBm;
 - таблица устройств с MAC, RSSI, connected и allowed.
 
-Если блок показывает, что сервис еще не записал BLE-статус, подождите один цикл сканирования или перезапустите сервис:
+В Wi-Fi-блоке должны появиться:
+
+- время последнего Wi-Fi-скана;
+- интерфейс, обычно `wlan0`;
+- количество подключенных станций;
+- лучший Wi-Fi-сигнал в dBm;
+- таблица станций с IP, MAC, сигналом, неактивностью и флагами `allowed`/`active`.
+
+Для автооткрытия подключите телефон к Wi-Fi сети платы, найдите его MAC в `Wi-Fi диагностика` или через `iw`, добавьте этот MAC в разрешенный список и включите:
+
+```ini
+[Service]
+Environment=BARRIER_WIFI_AUTO_OPEN=true
+Environment=BARRIER_WIFI_INTERFACE=wlan0
+Environment=BARRIER_WIFI_MIN_SIGNAL=-75
+Environment=BARRIER_WIFI_MAX_INACTIVE_MS=60000
+```
+
+Если блок показывает, что сервис еще не записал BLE/Wi-Fi-статус, подождите один цикл сканирования или перезапустите сервис:
 
 ```bash
 sudo systemctl restart barrier.service
@@ -215,12 +244,19 @@ BARRIER_RELAY_PORT=auto
 BARRIER_RELAY_BAUDRATE=9600
 BARRIER_DRY_RUN=false
 
+BARRIER_BLUETOOTH_ENABLED=true
 BARRIER_SCAN_TIME=8
 BARRIER_CHECK_INTERVAL=2
 BARRIER_COOLDOWN=15
 BARRIER_PULSE_TIME=2
 BARRIER_MISSING_THRESHOLD=3
 BARRIER_MIN_RSSI=
+
+BARRIER_WIFI_AUTO_OPEN=false
+BARRIER_WIFI_INTERFACE=wlan0
+BARRIER_WIFI_MIN_SIGNAL=
+BARRIER_WIFI_MAX_INACTIVE_MS=60000
+BARRIER_WIFI_LEASES_PATH=/var/lib/misc/dnsmasq.leases
 
 BARRIER_PANEL_HOST=0.0.0.0
 BARRIER_PANEL_PORT=8080
@@ -233,6 +269,14 @@ BARRIER_FLASK_SECRET_KEY=change-me
 `BARRIER_DRY_RUN=true` отключает реальную активацию реле. Сервис будет логировать действия, но не писать в serial-порт.
 
 `BARRIER_MIN_RSSI=-85` включает порог мощности сигнала. Если переменная пустая, любой найденный разрешенный MAC считается присутствующим. Если задан порог, устройство считается присутствующим только когда его RSSI не слабее порога.
+
+`BARRIER_BLUETOOTH_ENABLED=false` отключает BLE-сканирование. Это удобно, если режим нужен только через Wi-Fi.
+
+`BARRIER_WIFI_AUTO_OPEN=true` включает автооткрытие по Wi-Fi. Сервис читает активные станции через `iw dev wlan0 station dump`, сравнивает их MAC с разрешенным списком и использует общий cooldown.
+
+`BARRIER_WIFI_MIN_SIGNAL=-75` включает порог мощности Wi-Fi-сигнала. Если переменная пустая, сигнал не фильтруется.
+
+`BARRIER_WIFI_MAX_INACTIVE_MS=60000` игнорирует Wi-Fi-станции, которые давно не обменивались трафиком. Значение `0` отключает этот фильтр.
 
 `BARRIER_PANEL_PASSWORD` включает пароль для web-панели. Если переменная пустая, панель доступна без логина.
 
@@ -559,6 +603,84 @@ curl -I http://127.0.0.1:8080/
 
 В активных подключениях должна быть сеть `barrier-ap` на `wlan0`, а web-панель должна отвечать `302` или страницей входа.
 
+## Автооткрытие по Wi-Fi
+
+Режим рассчитан на сценарий: телефон заранее знает Wi-Fi сеть платы, подъезжает к шлагбауму, автоматически подключается к точке доступа, сервис видит разрешенный Wi-Fi MAC и отправляет импульс открытия.
+
+Порядок настройки:
+
+1. Настройте точку доступа Wi-Fi и подключите к ней телефон.
+2. Посмотрите MAC подключенного телефона:
+
+```bash
+sudo iw dev wlan0 station dump
+```
+
+В выводе нужна строка вида:
+
+```text
+Station AA:BB:CC:DD:EE:FF (on wlan0)
+```
+
+3. Добавьте этот Wi-Fi MAC в разрешенный список:
+
+```bash
+/opt/barrier/venv/bin/python /opt/barrier/src/barrier_service.py add AA:BB:CC:DD:EE:FF "Phone Wi-Fi"
+```
+
+4. Включите автооткрытие в основном сервисе:
+
+```bash
+sudo systemctl edit barrier.service
+```
+
+```ini
+[Service]
+Environment=BARRIER_WIFI_AUTO_OPEN=true
+Environment=BARRIER_WIFI_INTERFACE=wlan0
+Environment=BARRIER_WIFI_MIN_SIGNAL=-75
+Environment=BARRIER_WIFI_MAX_INACTIVE_MS=60000
+```
+
+Если хотите режим только через Wi-Fi, без BLE:
+
+```ini
+[Service]
+Environment=BARRIER_BLUETOOTH_ENABLED=false
+Environment=BARRIER_WIFI_AUTO_OPEN=true
+Environment=BARRIER_WIFI_INTERFACE=wlan0
+```
+
+5. Чтобы web-панель тоже показывала, что Wi-Fi-автооткрытие включено, добавьте те же Wi-Fi-переменные в `barrier-panel.service`:
+
+```bash
+sudo systemctl edit barrier-panel.service
+```
+
+6. Примените настройки:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart barrier.service barrier-panel.service
+```
+
+Проверить вручную:
+
+```bash
+/opt/barrier/venv/bin/python /opt/barrier/src/barrier_service.py wifi-status
+journalctl -u barrier.service -n 80 --no-pager
+```
+
+В web-панели появится блок `Wi-Fi диагностика`: подключенные станции, MAC, сигнал, неактивность, IP/hostname и флаги `allowed`/`active`.
+
+Важно про телефоны: iOS и Android часто используют приватный MAC для каждой Wi-Fi сети. Обычно он стабилен для конкретной SSID, поэтому добавлять нужно именно MAC из `iw station dump`, когда телефон подключен к сети шлагбаума. Если пользователь сбросит настройки сети или отключит/включит приватный адрес, MAC может измениться.
+
+Практичные стартовые пороги:
+
+- `BARRIER_WIFI_MIN_SIGNAL=-75` для открытия только рядом с платой;
+- `BARRIER_WIFI_MAX_INACTIVE_MS=60000`, чтобы не считать давно молчащие станции активными;
+- `BARRIER_COOLDOWN=15` или больше, чтобы один подъезд не давал серию импульсов.
+
 ## Статический Ethernet
 
 Для сервисного подключения через Ethernet можно закрепить адрес:
@@ -626,10 +748,13 @@ curl -I http://10.14.0.117:8080/
 - `allowed_devices`: разрешенные устройства;
 - `event_log`: журнал событий.
 - `bluetooth_status`: последний BLE-снимок для web-панели.
+- `wifi_status`: последний Wi-Fi-снимок для web-панели.
 
 Журнал событий заполняется сервисом, CLI и web-панелью. В него пишутся добавления устройств, включение/отключение, тесты реле, backup, ошибки сканирования и импульсы открытия.
 
 `bluetooth_status` перезаписывается после каждого BLE-скана. Там хранится количество найденных устройств, количество connected-устройств, количество видимых разрешенных MAC, лучший RSSI, самый сильный найденный девайс, JSON со списком устройств, текущий presence-статус, missing-счетчик и RSSI-порог.
+
+`wifi_status` перезаписывается после каждого Wi-Fi-скана. Там хранится интерфейс, подключенные станции, активные разрешенные MAC, лучший сигнал, DHCP IP/hostname, текущий presence-статус, missing-счетчик и Wi-Fi-пороги.
 
 ## Backup базы
 
@@ -913,10 +1038,10 @@ python -m unittest discover -s tests
 Проверка синтаксиса:
 
 ```bash
-python -m py_compile barrier_config.py barrier_types.py barrier_db.py barrier_presence.py barrier_bluetooth.py barrier_relay.py barrier_service.py panel.py tests/test_presence.py
+python -m py_compile barrier_config.py barrier_types.py barrier_db.py barrier_presence.py barrier_bluetooth.py barrier_wifi.py barrier_relay.py barrier_service.py panel.py tests/test_presence.py
 ```
 
-Тесты не требуют Raspberry Pi, Bluetooth или реле. Они проверяют чистую логику presence-состояний.
+Тесты не требуют Raspberry Pi, Bluetooth, Wi-Fi AP или реле. Они проверяют чистую логику presence-состояний и парсинг диагностических выводов.
 
 ## Минимальный сценарий после установки
 
@@ -954,6 +1079,13 @@ ip a
 bluetoothctl show
 timeout 15s bluetoothctl scan on
 bluetoothctl devices
+```
+
+Проверить Wi-Fi-станции:
+
+```bash
+iw dev wlan0 station dump
+/opt/barrier/venv/bin/python /opt/barrier/src/barrier_service.py wifi-status
 ```
 
 Проверить serial-порт:

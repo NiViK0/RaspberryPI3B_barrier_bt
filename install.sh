@@ -60,7 +60,7 @@ install_packages() {
   apt install -y \
     git \
     python3 python3-pip python3-venv \
-    bluetooth bluez sqlite3
+    bluetooth bluez sqlite3 iw
 }
 
 prepare_dirs() {
@@ -93,7 +93,7 @@ fetch_repo() {
 check_repo_files() {
   local missing=0
 
-  for f in barrier_service.py panel.py scripts/bluetooth_watchdog.sh scripts/barrier_open.sh scripts/barrier_set_time.sh scripts/setup_wifi_ap.sh scripts/setup_ethernet_static.sh; do
+  for f in barrier_service.py barrier_wifi.py panel.py scripts/bluetooth_watchdog.sh scripts/barrier_open.sh scripts/barrier_set_time.sh scripts/setup_wifi_ap.sh scripts/setup_ethernet_static.sh; do
     if [[ ! -f "${SRC_DIR}/${f}" ]]; then
       err "Не найден файл ${SRC_DIR}/${f}"
       missing=1
@@ -267,6 +267,7 @@ write_panel_sudoers() {
   cat > "$PANEL_SUDOERS_FILE" <<EOF
 ${SERVICE_USER} ALL=(root) NOPASSWD: /usr/bin/systemctl restart bluetooth, /usr/bin/systemctl restart barrier.service, /usr/bin/systemctl restart barrier-bluetooth-watchdog.timer, /usr/bin/systemctl start barrier-bluetooth-watchdog.service, /usr/bin/systemctl reboot, /bin/systemctl restart bluetooth, /bin/systemctl restart barrier.service, /bin/systemctl restart barrier-bluetooth-watchdog.timer, /bin/systemctl start barrier-bluetooth-watchdog.service, /bin/systemctl reboot
 ${SERVICE_USER} ALL=(root) NOPASSWD: /usr/local/bin/barrier-set-time *
+${SERVICE_USER} ALL=(root) NOPASSWD: /usr/sbin/iw dev * station dump, /sbin/iw dev * station dump, /usr/bin/iw dev * station dump, /bin/iw dev * station dump
 EOF
 
   chmod 0440 "$PANEL_SUDOERS_FILE"

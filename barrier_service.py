@@ -22,11 +22,13 @@ from barrier_db import (
     normalize_mac,
     remove_device,
     save_bluetooth_status,
+    save_wifi_status,
     set_device_enabled,
 )
 from barrier_presence import process_presence, validate_mac
 from barrier_relay import RelayController, SerialDependencyError, SerialException, detect_relay_port
 from barrier_types import PresenceStatus, State
+from barrier_wifi import collect_wifi_details, format_wifi_devices_output
 
 
 def setup_logging() -> None:
@@ -120,7 +122,7 @@ def save_scan_snapshot(
             missing_count=state.missing_count,
             missing_threshold=config.missing_threshold,
             min_rssi=config.min_rssi,
-            allowed_present=state.any_device_was_present,
+            allowed_present=False,
         )
         return
 
@@ -138,8 +140,66 @@ def save_scan_snapshot(
         missing_count=state.missing_count,
         missing_threshold=config.missing_threshold,
         min_rssi=config.min_rssi,
-        allowed_present=state.any_device_was_present,
+        allowed_present=presence == PresenceStatus.PRESENT,
     )
+
+
+def save_wifi_snapshot(
+    config: Config,
+    status: PresenceStatus,
+    details: dict[str, object] | None,
+    state: State,
+    error: str = "",
+) -> None:
+    if status == PresenceStatus.SCAN_FAILED or details is None:
+        save_wifi_status(
+            config.db_path,
+            "scan_failed",
+            config.wifi_interface,
+            0,
+            0,
+            None,
+            "",
+            [],
+            "",
+            error or "Wi-Fi scan failed",
+            presence_status=PresenceStatus.SCAN_FAILED.name.lower(),
+            missing_count=state.missing_count,
+            missing_threshold=config.missing_threshold,
+            min_signal=config.wifi_min_signal,
+            max_inactive_ms=config.wifi_max_inactive_ms,
+            allowed_present=False,
+        )
+        return
+
+    save_wifi_status(
+        config.db_path,
+        "ok",
+        config.wifi_interface,
+        int(details["connected_devices"]),
+        int(details["allowed_seen"]),
+        details["max_signal"],  # type: ignore[arg-type]
+        str(details["strongest_station"]),
+        details["stations"],  # type: ignore[arg-type]
+        str(details["raw_output"]),
+        "",
+        presence_status=status.name.lower(),
+        missing_count=state.missing_count,
+        missing_threshold=config.missing_threshold,
+        min_signal=config.wifi_min_signal,
+        max_inactive_ms=config.wifi_max_inactive_ms,
+        allowed_present=status == PresenceStatus.PRESENT,
+    )
+
+
+def combine_presence_statuses(statuses: list[PresenceStatus]) -> PresenceStatus:
+    if not statuses:
+        return PresenceStatus.SCAN_FAILED
+    if PresenceStatus.PRESENT in statuses:
+        return PresenceStatus.PRESENT
+    if any(status != PresenceStatus.SCAN_FAILED for status in statuses):
+        return PresenceStatus.ABSENT
+    return PresenceStatus.SCAN_FAILED
 
 
 def cmd_init_db(config: Config) -> None:
@@ -278,10 +338,31 @@ def cmd_scan_status(config: Config) -> None:
         bt.stop()
 
 
+def cmd_wifi_status(config: Config) -> None:
+    init_db(config.db_path)
+    allowed_macs = get_enabled_macs(config.db_path)
+    try:
+        details = collect_wifi_details(config, allowed_macs)
+        presence = details["presence"]  # type: ignore[assignment]
+        assert isinstance(presence, PresenceStatus)
+        save_wifi_snapshot(config, presence, details, State())
+        print(
+            "Wi-Fi scan saved: "
+            f"interface={config.wifi_interface} "
+            f"connected={details['connected_devices']} "
+            f"allowed_seen={details['allowed_seen']} "
+            f"presence={presence.name.lower()}"
+        )
+    except Exception as exc:
+        save_wifi_snapshot(config, PresenceStatus.SCAN_FAILED, None, State(), str(exc))
+        print(f"Wi-Fi scan failed: {exc}")
+        sys.exit(1)
+
+
 def cmd_run(config: Config) -> None:
     init_db(config.db_path)
     state = State()
-    bt = BluetoothCtlSession()
+    bt = BluetoothCtlSession() if config.bluetooth_enabled else None
 
     def trigger_action(action: str) -> bool:
         try:
@@ -299,6 +380,11 @@ def cmd_run(config: Config) -> None:
         return True
 
     try:
+        if not config.bluetooth_enabled and not config.wifi_auto_open:
+            logging.error("Нет включённых источников обнаружения: включи BLE или BARRIER_WIFI_AUTO_OPEN=true")
+            log_db_event(config, "ERROR", "service", "no-presence-sources", "Нет включённых источников обнаружения")
+            sys.exit(1)
+
         allowed_macs = get_enabled_macs(config.db_path)
         logging.info("Разрешённых MAC-адресов: %s", len(allowed_macs))
         if not allowed_macs:
@@ -311,30 +397,92 @@ def cmd_run(config: Config) -> None:
                 "Список разрешённых MAC пуст, сервис ждёт добавления устройства",
             )
 
-        log_db_event(config, "INFO", "service", "service-start", "BLE-сервис запущен")
-        bt.start()
+        sources = []
+        if config.bluetooth_enabled:
+            sources.append("BLE")
+        if config.wifi_auto_open:
+            sources.append(f"Wi-Fi:{config.wifi_interface}")
+
+        log_db_event(config, "INFO", "service", "service-start", f"Сервис запущен, источники: {', '.join(sources)}")
+        if bt is not None:
+            try:
+                bt.start()
+            except Exception as exc:
+                if not config.wifi_auto_open:
+                    raise
+                logging.warning("BLE недоступен, продолжаю работу только с Wi-Fi: %s", exc)
+                log_db_event(config, "WARN", "service", "ble-start-failed", f"BLE недоступен, Wi-Fi режим продолжает работу: {exc}")
+                bt.stop()
+                bt = None
 
         with RelayController(config) as relay:
             while True:
                 allowed_macs = get_enabled_macs(config.db_path)
-                base_status, devices_output = scan_once(bt, config.scan_time)
 
-                if base_status == PresenceStatus.SCAN_FAILED:
-                    log_db_event(config, "WARN", "service", "scan-failed", "BLE-сканирование не удалось")
-                    process_presence(base_status, devices_output, config, state, trigger_action)
-                    save_scan_snapshot(config, base_status, devices_output, None, state, base_status)
-                elif not allowed_macs:
-                    logging.warning("Список разрешённых MAC пуст, BLE-статус сохранён только для диагностики")
-                    details = collect_scan_details(bt, devices_output, allowed_macs)
-                    save_scan_snapshot(config, base_status, devices_output, details, state, PresenceStatus.ABSENT)
-                else:
-                    details = collect_scan_details(bt, devices_output, allowed_macs)
-                    actual_presence = detect_allowed_presence_from_details(
-                        details["devices"],  # type: ignore[arg-type]
-                        config.min_rssi,
-                    )
-                    process_presence(actual_presence, devices_output, config, state, trigger_action)
-                    save_scan_snapshot(config, base_status, devices_output, details, state, actual_presence)
+                statuses: list[PresenceStatus] = []
+                combined_outputs: list[str] = []
+
+                ble_base_status = PresenceStatus.SCAN_FAILED
+                ble_presence = PresenceStatus.SCAN_FAILED
+                ble_devices_output = ""
+                ble_details: dict[str, object] | None = None
+
+                if bt is not None:
+                    ble_base_status, ble_devices_output = scan_once(bt, config.scan_time)
+                    if ble_base_status == PresenceStatus.SCAN_FAILED:
+                        log_db_event(config, "WARN", "service", "scan-failed", "BLE-сканирование не удалось")
+                        ble_presence = PresenceStatus.SCAN_FAILED
+                    else:
+                        if not allowed_macs:
+                            logging.warning("Список разрешённых MAC пуст, BLE-статус сохранён только для диагностики")
+                        ble_details = collect_scan_details(bt, ble_devices_output, allowed_macs)
+                        ble_presence = (
+                            detect_allowed_presence_from_details(
+                                ble_details["devices"],  # type: ignore[arg-type]
+                                config.min_rssi,
+                            )
+                            if allowed_macs
+                            else PresenceStatus.ABSENT
+                        )
+
+                    statuses.append(ble_presence)
+                    combined_outputs.append("BLE:\n" + (ble_devices_output or "BLE scan failed"))
+
+                wifi_presence = PresenceStatus.SCAN_FAILED
+                wifi_details: dict[str, object] | None = None
+                wifi_error = ""
+
+                if config.wifi_auto_open:
+                    try:
+                        wifi_details = collect_wifi_details(config, allowed_macs)
+                        wifi_presence = wifi_details["presence"]  # type: ignore[assignment]
+                        assert isinstance(wifi_presence, PresenceStatus)
+                        wifi_output = format_wifi_devices_output(
+                            wifi_details["stations"]  # type: ignore[arg-type]
+                        )
+                        combined_outputs.append("Wi-Fi:\n" + (wifi_output or "Wi-Fi stations not found"))
+                    except Exception as exc:
+                        wifi_error = str(exc)
+                        logging.warning("Ошибка Wi-Fi-сканирования: %s", exc)
+                        log_db_event(config, "WARN", "service", "wifi-scan-failed", wifi_error)
+                        combined_outputs.append(f"Wi-Fi scan failed: {wifi_error}")
+
+                    statuses.append(wifi_presence)
+
+                combined_presence = combine_presence_statuses(statuses)
+                process_presence(
+                    combined_presence,
+                    "\n\n".join(combined_outputs),
+                    config,
+                    state,
+                    trigger_action,
+                )
+
+                if bt is not None:
+                    save_scan_snapshot(config, ble_base_status, ble_devices_output, ble_details, state, ble_presence)
+
+                if config.wifi_auto_open:
+                    save_wifi_snapshot(config, wifi_presence, wifi_details, state, wifi_error)
 
                 time.sleep(config.check_interval)
 
@@ -351,10 +499,11 @@ def cmd_run(config: Config) -> None:
         sys.exit(1)
     except Exception:
         logging.exception("Критическая ошибка")
-        log_db_event(config, "ERROR", "service", "critical-error", "Критическая ошибка BLE-сервиса")
+        log_db_event(config, "ERROR", "service", "critical-error", "Критическая ошибка сервиса")
         sys.exit(1)
     finally:
-        bt.stop()
+        if bt is not None:
+            bt.stop()
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -402,6 +551,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_scan_status = subparsers.add_parser("scan-status", help="Обновить BLE-статус для web-панели")
     p_scan_status.set_defaults(handler=lambda config, args: cmd_scan_status(config))
+
+    p_wifi_status = subparsers.add_parser("wifi-status", help="Обновить Wi-Fi-статус для web-панели")
+    p_wifi_status.set_defaults(handler=lambda config, args: cmd_wifi_status(config))
 
     p_run = subparsers.add_parser("run", help="Запустить основной цикл")
     p_run.set_defaults(handler=lambda config, args: cmd_run(config))

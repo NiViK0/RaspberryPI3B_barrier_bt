@@ -9,7 +9,16 @@ from functools import wraps
 from flask import Flask, Response, redirect, render_template_string, request, session, url_for
 
 from barrier_config import load_config
-from barrier_db import device_counts, init_db, latest_bluetooth_status, list_devices, log_event, normalize_mac, recent_events
+from barrier_db import (
+    device_counts,
+    init_db,
+    latest_bluetooth_status,
+    latest_wifi_status,
+    list_devices,
+    log_event,
+    normalize_mac,
+    recent_events,
+)
 
 
 config = load_config()
@@ -178,6 +187,80 @@ HTML = """
   </div>
 
   <div class="card">
+    <h2>Wi-Fi диагностика</h2>
+    {% if wifi_status %}
+      <div class="stats">
+        <div class="stat {% if wifi_status.status == 'ok' %}ble-ok{% else %}ble-bad{% endif %}">
+          <span class="muted">Последний скан</span>
+          <strong>{{ wifi_status.updated_at }}</strong>
+          <span class="muted small">{{ wifi_status.age_label }}</span>
+        </div>
+        <div class="stat"><span class="muted">Интерфейс</span><strong>{{ wifi_status.interface }}</strong></div>
+        <div class="stat {% if wifi_status.connected_devices %}ble-ok{% else %}ble-warn{% endif %}">
+          <span class="muted">Подключено</span><strong>{{ wifi_status.connected_devices }}</strong>
+        </div>
+        <div class="stat {% if wifi_status.allowed_seen %}ble-ok{% else %}ble-warn{% endif %}">
+          <span class="muted">Разрешенных активно</span><strong>{{ wifi_status.allowed_seen }}</strong>
+        </div>
+        <div class="stat {% if wifi_status.max_signal is not none %}ble-ok{% else %}ble-warn{% endif %}">
+          <span class="muted">Лучший сигнал</span>
+          <strong>{% if wifi_status.max_signal is not none %}{{ wifi_status.max_signal }} dBm{% else %}n/a{% endif %}</strong>
+        </div>
+        <div class="stat {% if wifi_status.allowed_present %}ble-ok{% else %}ble-warn{% endif %}">
+          <span class="muted">Presence</span>
+          <strong>{{ wifi_status.presence_status }}</strong>
+          <span class="muted small">missing {{ wifi_status.missing_count }}/{{ wifi_status.missing_threshold }}</span>
+        </div>
+      </div>
+      <p><b>Автооткрытие Wi-Fi:</b> {% if wifi_auto_open %}<span class="badge badge-ok">on</span>{% else %}<span class="badge">off</span>{% endif %}</p>
+      {% if wifi_status.min_signal is not none %}
+        <p><b>Порог сигнала:</b> {{ wifi_status.min_signal }} dBm</p>
+      {% endif %}
+      {% if wifi_status.max_inactive_ms %}
+        <p><b>Макс. неактивность:</b> {{ wifi_status.max_inactive_ms }} ms</p>
+      {% endif %}
+      {% if wifi_status.strongest_station %}
+        <p><b>Самый сильный сигнал:</b> {{ wifi_status.strongest_station }}</p>
+      {% endif %}
+      {% if wifi_status.error %}
+        <p class="err">{{ wifi_status.error }}</p>
+      {% endif %}
+      {% if wifi_status.stations %}
+        <table>
+          <thead>
+            <tr>
+              <th>Устройство</th>
+              <th>IP</th>
+              <th>MAC</th>
+              <th>Сигнал</th>
+              <th>Неактивность</th>
+              <th>Допущено</th>
+              <th>Активно</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for s in wifi_status.stations %}
+              <tr>
+                <td>{{ s.name }}</td>
+                <td>{% if s.ip %}{{ s.ip }}{% else %}<span class="muted">n/a</span>{% endif %}</td>
+                <td class="mono">{{ s.mac }}</td>
+                <td>{% if s.signal is not none %}{{ s.signal }} dBm{% else %}<span class="muted">n/a</span>{% endif %}</td>
+                <td>{% if s.inactive_ms is not none %}{{ s.inactive_ms }} ms{% else %}<span class="muted">n/a</span>{% endif %}</td>
+                <td>{% if s.allowed %}<span class="badge badge-ok">yes</span>{% else %}<span class="badge badge-bad">no</span>{% endif %}</td>
+                <td>{% if s.active %}<span class="badge badge-ok">yes</span>{% else %}<span class="badge">no</span>{% endif %}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% else %}
+        <p class="muted">Wi-Fi станции пока не подключены.</p>
+      {% endif %}
+    {% else %}
+      <p class="muted">Сервис еще не записал Wi-Fi-статус. Включи автооткрытие или запусти обновление Wi-Fi-скана.</p>
+    {% endif %}
+  </div>
+
+  <div class="card">
     <h2>Разрешенные устройства сейчас</h2>
     {% if allowed_statuses %}
       <table>
@@ -185,9 +268,11 @@ HTML = """
           <tr>
             <th>Имя</th>
             <th>MAC</th>
+            <th>Источник</th>
             <th>Состояние</th>
-            <th>RSSI</th>
+            <th>Сигнал</th>
             <th>Connected</th>
+            <th>Active</th>
             <th>Enabled</th>
           </tr>
         </thead>
@@ -196,9 +281,11 @@ HTML = """
             <tr>
               <td>{{ d.name }}</td>
               <td class="mono">{{ d.mac }}</td>
+              <td>{% if d.source %}{{ d.source }}{% else %}<span class="muted">n/a</span>{% endif %}</td>
               <td>{% if d.seen %}<span class="badge badge-ok">видно</span>{% else %}<span class="badge badge-bad">не видно</span>{% endif %}</td>
-              <td>{% if d.rssi is not none %}{{ d.rssi }} dBm{% else %}<span class="muted">n/a</span>{% endif %}</td>
+              <td>{% if d.signal is not none %}{{ d.signal }} dBm{% else %}<span class="muted">n/a</span>{% endif %}</td>
               <td>{% if d.connected %}<span class="badge badge-ok">yes</span>{% else %}<span class="badge">no</span>{% endif %}</td>
+              <td>{% if d.active %}<span class="badge badge-ok">yes</span>{% else %}<span class="badge">no</span>{% endif %}</td>
               <td>{% if d.enabled %}<span class="badge badge-ok">yes</span>{% else %}<span class="badge">no</span>{% endif %}</td>
             </tr>
           {% endfor %}
@@ -222,6 +309,9 @@ HTML = """
     </form>
     <form method="post" action="{{ url_for('refresh_ble_status') }}">
       <button type="submit">Обновить BLE-скан</button>
+    </form>
+    <form method="post" action="{{ url_for('refresh_wifi_status') }}">
+      <button type="submit">Обновить Wi-Fi-скан</button>
     </form>
     <form id="sync-time-form" method="post" action="{{ url_for('sync_time') }}">
       <input type="hidden" id="sync-time-epoch" name="epoch" value="">
@@ -489,8 +579,7 @@ def board_time() -> str:
     return time.strftime("%Y-%m-%d %H:%M:%S")
 
 
-def bluetooth_status_for_view() -> dict[str, object] | None:
-    status = latest_bluetooth_status(config.db_path)
+def status_with_age(status: dict[str, object] | None) -> dict[str, object] | None:
     if status is None:
         return None
 
@@ -514,12 +603,40 @@ def bluetooth_status_for_view() -> dict[str, object] | None:
     return status
 
 
-def allowed_device_statuses(devices: list[tuple], bluetooth_status: dict[str, object] | None) -> list[dict[str, object]]:
+def bluetooth_status_for_view() -> dict[str, object] | None:
+    return status_with_age(latest_bluetooth_status(config.db_path))
+
+
+def wifi_status_for_view() -> dict[str, object] | None:
+    return status_with_age(latest_wifi_status(config.db_path))
+
+
+def allowed_device_statuses(
+    devices: list[tuple],
+    bluetooth_status: dict[str, object] | None,
+    wifi_status: dict[str, object] | None,
+) -> list[dict[str, object]]:
     visible_by_mac: dict[str, dict[str, object]] = {}
     if bluetooth_status:
         for device in bluetooth_status.get("devices", []):
             if isinstance(device, dict) and device.get("mac"):
-                visible_by_mac[normalize_mac(str(device["mac"]))] = device
+                visible_by_mac[normalize_mac(str(device["mac"]))] = {
+                    "source": "BLE",
+                    "signal": device.get("rssi"),
+                    "connected": bool(device.get("connected")),
+                    "active": bool(device.get("allowed")),
+                }
+    if wifi_status:
+        for station in wifi_status.get("stations", []):
+            if isinstance(station, dict) and station.get("mac"):
+                mac = normalize_mac(str(station["mac"]))
+                if mac not in visible_by_mac or station.get("active"):
+                    visible_by_mac[mac] = {
+                        "source": "Wi-Fi",
+                        "signal": station.get("signal"),
+                        "connected": True,
+                        "active": bool(station.get("active")),
+                    }
 
     rows = []
     for _row_id, name, mac, enabled in devices:
@@ -531,8 +648,10 @@ def allowed_device_statuses(devices: list[tuple], bluetooth_status: dict[str, ob
                 "mac": normalized_mac,
                 "enabled": bool(enabled),
                 "seen": visible is not None,
-                "rssi": visible.get("rssi") if visible else None,
+                "signal": visible.get("signal") if visible else None,
                 "connected": bool(visible.get("connected")) if visible else False,
+                "source": visible.get("source") if visible else "",
+                "active": bool(visible.get("active")) if visible else False,
             }
         )
     return rows
@@ -569,11 +688,12 @@ def index():
     total_devices, enabled_devices = device_counts(config.db_path)
     devices = list_devices(config.db_path)
     bluetooth_status = bluetooth_status_for_view()
+    wifi_status = wifi_status_for_view()
     return render_template_string(
         HTML,
         auth_enabled=auth_enabled(),
         devices=devices,
-        allowed_statuses=allowed_device_statuses(devices, bluetooth_status),
+        allowed_statuses=allowed_device_statuses(devices, bluetooth_status, wifi_status),
         events=recent_events(config.db_path, 20),
         message=message,
         success=success,
@@ -586,6 +706,8 @@ def index():
         board_time_epoch=int(time.time()),
         services=service_statuses(),
         bluetooth_status=bluetooth_status,
+        wifi_status=wifi_status,
+        wifi_auto_open=config.wifi_auto_open,
     )
 
 
@@ -647,6 +769,13 @@ def refresh_ble_status():
     return run_and_redirect(["scan-status"], "BLE-статус обновлен")
 
 
+@app.route("/refresh-wifi", methods=["POST"])
+@login_required
+def refresh_wifi_status():
+    log_panel_event("refresh-wifi-request", "Запрос ручного Wi-Fi-скана")
+    return run_and_redirect(["wifi-status"], "Wi-Fi-статус обновлен")
+
+
 @app.route("/diagnostic-report", methods=["GET"])
 @login_required
 def diagnostic_report():
@@ -655,6 +784,7 @@ def diagnostic_report():
         ("date", ["date"]),
         ("timedatectl", ["timedatectl", "status"]),
         ("hostname -I", ["hostname", "-I"]),
+        ("iw station dump", ["iw", "dev", config.wifi_interface, "station", "dump"]),
         ("bluetoothctl show", ["bluetoothctl", "show"]),
         ("barrier.service", ["systemctl", "status", "barrier.service", "--no-pager"]),
         ("barrier-panel.service", ["systemctl", "status", "barrier-panel.service", "--no-pager"]),
@@ -670,6 +800,11 @@ def diagnostic_report():
     lines.append("Latest BLE status:")
     status = bluetooth_status_for_view()
     lines.append(str(status or "No BLE status yet"))
+
+    lines.append("")
+    lines.append("Latest Wi-Fi status:")
+    wifi_status = wifi_status_for_view()
+    lines.append(str(wifi_status or "No Wi-Fi status yet"))
 
     for title, cmd in checks:
         ok, output = run_command(cmd, timeout=15)

@@ -5,7 +5,7 @@ import json
 from contextlib import closing
 from datetime import datetime
 
-from barrier_types import BluetoothStatusRow, DeviceRow, EventRow
+from barrier_types import BluetoothStatusRow, DeviceRow, EventRow, WifiStatusRow
 
 
 def normalize_mac(mac: str) -> str:
@@ -63,11 +63,40 @@ def init_db(db_path: str) -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS wifi_status (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                status TEXT NOT NULL,
+                interface TEXT NOT NULL DEFAULT '',
+                connected_devices INTEGER NOT NULL DEFAULT 0,
+                allowed_seen INTEGER NOT NULL DEFAULT 0,
+                max_signal INTEGER,
+                strongest_station TEXT NOT NULL DEFAULT '',
+                stations_json TEXT NOT NULL DEFAULT '[]',
+                raw_output TEXT NOT NULL DEFAULT '',
+                error TEXT NOT NULL DEFAULT '',
+                presence_status TEXT NOT NULL DEFAULT 'unknown',
+                missing_count INTEGER NOT NULL DEFAULT 0,
+                missing_threshold INTEGER NOT NULL DEFAULT 0,
+                min_signal INTEGER,
+                max_inactive_ms INTEGER,
+                allowed_present INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
         ensure_column(conn, "bluetooth_status", "presence_status", "TEXT NOT NULL DEFAULT 'unknown'")
         ensure_column(conn, "bluetooth_status", "missing_count", "INTEGER NOT NULL DEFAULT 0")
         ensure_column(conn, "bluetooth_status", "missing_threshold", "INTEGER NOT NULL DEFAULT 0")
         ensure_column(conn, "bluetooth_status", "min_rssi", "INTEGER")
         ensure_column(conn, "bluetooth_status", "allowed_present", "INTEGER NOT NULL DEFAULT 0")
+        ensure_column(conn, "wifi_status", "presence_status", "TEXT NOT NULL DEFAULT 'unknown'")
+        ensure_column(conn, "wifi_status", "missing_count", "INTEGER NOT NULL DEFAULT 0")
+        ensure_column(conn, "wifi_status", "missing_threshold", "INTEGER NOT NULL DEFAULT 0")
+        ensure_column(conn, "wifi_status", "min_signal", "INTEGER")
+        ensure_column(conn, "wifi_status", "max_inactive_ms", "INTEGER")
+        ensure_column(conn, "wifi_status", "allowed_present", "INTEGER NOT NULL DEFAULT 0")
         conn.commit()
 
 
@@ -275,6 +304,115 @@ def latest_bluetooth_status(db_path: str) -> dict[str, object] | None:
         "missing_threshold": row[13],
         "min_rssi": row[14],
         "allowed_present": bool(row[15]),
+    }
+
+
+def save_wifi_status(
+    db_path: str,
+    status: str,
+    interface: str,
+    connected_devices: int,
+    allowed_seen: int,
+    max_signal: int | None,
+    strongest_station: str,
+    stations: list[dict[str, object]],
+    raw_output: str,
+    error: str = "",
+    presence_status: str = "unknown",
+    missing_count: int = 0,
+    missing_threshold: int = 0,
+    min_signal: int | None = None,
+    max_inactive_ms: int | None = None,
+    allowed_present: bool = False,
+) -> None:
+    with closing(sqlite3.connect(db_path)) as conn:
+        conn.execute(
+            """
+            INSERT INTO wifi_status(
+                id, updated_at, status, interface, connected_devices,
+                allowed_seen, max_signal, strongest_station, stations_json, raw_output, error,
+                presence_status, missing_count, missing_threshold, min_signal,
+                max_inactive_ms, allowed_present
+            )
+            VALUES (1, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                updated_at = excluded.updated_at,
+                status = excluded.status,
+                interface = excluded.interface,
+                connected_devices = excluded.connected_devices,
+                allowed_seen = excluded.allowed_seen,
+                max_signal = excluded.max_signal,
+                strongest_station = excluded.strongest_station,
+                stations_json = excluded.stations_json,
+                raw_output = excluded.raw_output,
+                error = excluded.error,
+                presence_status = excluded.presence_status,
+                missing_count = excluded.missing_count,
+                missing_threshold = excluded.missing_threshold,
+                min_signal = excluded.min_signal,
+                max_inactive_ms = excluded.max_inactive_ms,
+                allowed_present = excluded.allowed_present
+            """,
+            (
+                status,
+                interface,
+                connected_devices,
+                allowed_seen,
+                max_signal,
+                strongest_station,
+                json.dumps(stations, ensure_ascii=False),
+                raw_output,
+                error,
+                presence_status,
+                missing_count,
+                missing_threshold,
+                min_signal,
+                max_inactive_ms,
+                1 if allowed_present else 0,
+            ),
+        )
+        conn.commit()
+
+
+def latest_wifi_status(db_path: str) -> dict[str, object] | None:
+    with closing(sqlite3.connect(db_path)) as conn:
+        row: WifiStatusRow | None = conn.execute(
+            """
+            SELECT id, updated_at, status, interface, connected_devices,
+                   allowed_seen, max_signal, strongest_station, stations_json, raw_output, error,
+                   presence_status, missing_count, missing_threshold, min_signal,
+                   max_inactive_ms, allowed_present
+            FROM wifi_status
+            WHERE id = 1
+            """
+        ).fetchone()
+
+    if row is None:
+        return None
+
+    stations_json = row[8] or "[]"
+    try:
+        stations = json.loads(stations_json)
+    except json.JSONDecodeError:
+        stations = []
+
+    return {
+        "updated_at": row[1],
+        "status": row[2],
+        "interface": row[3],
+        "connected_devices": row[4],
+        "allowed_seen": row[5],
+        "max_signal": row[6],
+        "strongest_station": row[7],
+        "stations": stations,
+        "raw_output": row[9],
+        "error": row[10],
+        "presence_status": row[11],
+        "missing_count": row[12],
+        "missing_threshold": row[13],
+        "min_signal": row[14],
+        "max_inactive_ms": row[15],
+        "allowed_present": bool(row[16]),
     }
 
 
