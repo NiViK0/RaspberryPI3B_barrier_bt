@@ -12,6 +12,15 @@ def normalize_mac(mac: str) -> str:
     return mac.strip().upper()
 
 
+def event_log_limit() -> int:
+    value = os.getenv("BARRIER_EVENT_LOG_LIMIT", "2000").strip()
+    try:
+        limit = int(value)
+    except ValueError:
+        return 2000
+    return max(0, limit)
+
+
 def init_db(db_path: str) -> None:
     db_dir = os.path.dirname(db_path)
     if db_dir:
@@ -157,6 +166,7 @@ def get_enabled_macs(db_path: str) -> list[str]:
 
 
 def log_event(db_path: str, level: str, source: str, action: str, message: str) -> None:
+    limit = event_log_limit()
     with closing(sqlite3.connect(db_path)) as conn:
         conn.execute(
             """
@@ -165,6 +175,16 @@ def log_event(db_path: str, level: str, source: str, action: str, message: str) 
             """,
             (level.upper(), source, action, message),
         )
+        if limit > 0:
+            conn.execute(
+                """
+                DELETE FROM event_log
+                WHERE id NOT IN (
+                    SELECT id FROM event_log ORDER BY id DESC LIMIT ?
+                )
+                """,
+                (limit,),
+            )
         conn.commit()
 
 

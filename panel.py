@@ -6,7 +6,7 @@ import time
 from datetime import datetime, timezone
 from functools import wraps
 
-from flask import Flask, Response, redirect, render_template_string, request, session, url_for
+from flask import Flask, Response, abort, has_request_context, jsonify, redirect, render_template_string, request, session, url_for
 
 from barrier_config import load_config
 from barrier_db import (
@@ -24,6 +24,14 @@ from barrier_db import (
 config = load_config()
 app = Flask(__name__)
 app.secret_key = config.flask_secret_key
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+)
+
+UNSAFE_SECRET_KEYS = {"", "change-me", "barrier-panel-local-secret"}
+LOGIN_ATTEMPT_LIMIT = 5
+LOGIN_LOCKOUT_SECONDS = 300
 
 SERVICE_NAMES = [
     "barrier.service",
@@ -99,6 +107,7 @@ HTML = """
     <h1>Управление шлагбаумом</h1>
     {% if auth_enabled %}
       <form method="post" action="{{ url_for('logout') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <button type="submit">Выйти</button>
       </form>
     {% endif %}
@@ -106,6 +115,15 @@ HTML = """
 
   {% if message %}
     <div class="card {% if success %}ok{% else %}err{% endif %}">{{ message }}</div>
+  {% endif %}
+
+  {% if security_warnings %}
+    <div class="card err">
+      <h2>Security</h2>
+      {% for warning in security_warnings %}
+        <p>{{ warning }}</p>
+      {% endfor %}
+    </div>
   {% endif %}
 
   <div class="card">
@@ -299,25 +317,32 @@ HTML = """
   <div class="card">
     <h2>Быстрые действия</h2>
     <form method="post" action="{{ url_for('manual_open') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <button type="submit">Открыть вручную</button>
     </form>
     <form method="post" action="{{ url_for('test_open') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <button type="submit">Открыть шлагбаум (тест)</button>
     </form>
     <form method="post" action="{{ url_for('restart_bluetooth') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <button type="submit">Перезапустить Bluetooth</button>
     </form>
     <form method="post" action="{{ url_for('refresh_ble_status') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <button type="submit">Обновить BLE-скан</button>
     </form>
     <form method="post" action="{{ url_for('refresh_wifi_status') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <button type="submit">Обновить Wi-Fi-скан</button>
     </form>
     <form id="sync-time-form" method="post" action="{{ url_for('sync_time') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <input type="hidden" id="sync-time-epoch" name="epoch" value="">
       <button type="submit">Синхронизировать время</button>
     </form>
     <form method="post" action="{{ url_for('backup_db_route') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <button type="submit">Сделать backup базы</button>
     </form>
     <form method="get" action="{{ url_for('diagnostic_report') }}">
@@ -350,18 +375,23 @@ HTML = """
   <div class="card">
     <h2>Управление платой</h2>
     <form method="post" action="{{ url_for('management_action', action='restart-barrier') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <button type="submit">Перезапустить BLE-сервис</button>
     </form>
     <form method="post" action="{{ url_for('management_action', action='restart-bluetooth') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <button type="submit">Перезапустить Bluetooth</button>
     </form>
     <form method="post" action="{{ url_for('management_action', action='run-watchdog') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <button type="submit">Запустить Bluetooth watchdog</button>
     </form>
     <form method="post" action="{{ url_for('management_action', action='restart-watchdog-timer') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <button type="submit">Перезапустить watchdog timer</button>
     </form>
     <form method="post" action="{{ url_for('management_action', action='reboot-board') }}" onsubmit="return confirm('Перезагрузить плату? Web-панель временно пропадёт.');">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <button type="submit">Перезагрузить плату</button>
     </form>
   </div>
@@ -369,6 +399,7 @@ HTML = """
   <div class="card">
     <h2>Добавить устройство</h2>
     <form method="post" action="{{ url_for('add_device') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <label>Имя</label>
       <input type="text" name="name" placeholder="Например: Мой телефон" required>
       <label>MAC-адрес</label>
@@ -400,14 +431,17 @@ HTML = """
             <td class="actions">
               {% if d[3] %}
               <form method="post" action="{{ url_for('disable_device', mac=d[2]) }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <button type="submit">Отключить</button>
               </form>
               {% else %}
               <form method="post" action="{{ url_for('enable_device', mac=d[2]) }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <button type="submit">Включить</button>
               </form>
               {% endif %}
               <form method="post" action="{{ url_for('remove_device', mac=d[2]) }}" onsubmit="return confirm('Удалить устройство?');">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <button type="submit">Удалить</button>
               </form>
             </td>
@@ -490,6 +524,7 @@ LOGIN_HTML = """
     <h1>Вход</h1>
     {% if error %}<p class="err">{{ error }}</p>{% endif %}
     <form method="post" action="{{ url_for('login') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <label>Пароль</label>
       <input type="password" name="password" required autofocus>
       <button type="submit">Войти</button>
@@ -500,13 +535,82 @@ LOGIN_HTML = """
 """
 
 
+SECURITY_SETUP_HTML = """
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Barrier Panel Security</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; max-width: 720px; }
+    .card { border: 1px solid #ccc; border-radius: 8px; padding: 16px; }
+    code { background: #f3f3f3; padding: 2px 5px; border-radius: 4px; }
+    .err { color: #b30000; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1 class="err">Web-панель заблокирована</h1>
+    <p>Панель слушает внешний адрес, но <code>BARRIER_PANEL_PASSWORD</code> не задан.</p>
+    <p>Задайте пароль и уникальный <code>BARRIER_FLASK_SECRET_KEY</code> в override для <code>barrier-panel.service</code>, затем перезапустите сервис.</p>
+  </div>
+</body>
+</html>
+"""
+
+
 def auth_enabled() -> bool:
     return bool(config.panel_password)
+
+
+def panel_password_required() -> bool:
+    return config.host not in {"127.0.0.1", "localhost", "::1"}
+
+
+def panel_locked_by_missing_password() -> bool:
+    return panel_password_required() and not auth_enabled()
+
+
+def insecure_secret_configured() -> bool:
+    return config.flask_secret_key in UNSAFE_SECRET_KEYS
+
+
+def request_origin() -> str:
+    return request.remote_addr or "unknown"
+
+
+def get_csrf_token() -> str:
+    token = session.get("csrf_token")
+    if not isinstance(token, str) or not token:
+        token = secrets.token_urlsafe(32)
+        session["csrf_token"] = token
+    return token
+
+
+def validate_csrf_token() -> bool:
+    expected = session.get("csrf_token")
+    supplied = request.form.get("csrf_token", "")
+    return isinstance(expected, str) and secrets.compare_digest(expected, supplied)
+
+
+@app.context_processor
+def inject_csrf_token():
+    return {"csrf_token": get_csrf_token}
+
+
+@app.before_request
+def protect_post_requests():
+    if request.method == "POST" and not validate_csrf_token():
+        log_panel_event("csrf-failed", f"CSRF check failed from {request_origin()}", "WARN")
+        abort(400)
 
 
 def login_required(view):
     @wraps(view)
     def wrapped(*args, **kwargs):
+        if panel_locked_by_missing_password():
+            return render_template_string(SECURITY_SETUP_HTML), 503
         if auth_enabled() and not session.get("authenticated"):
             return redirect(url_for("login"))
         return view(*args, **kwargs)
@@ -542,9 +646,20 @@ def run_and_redirect(args: list[str], default_message: str = "Готово"):
 
 def log_panel_event(action: str, message: str, level: str = "INFO") -> None:
     try:
+        if has_request_context():
+            message = f"{message} | remote={request_origin()}"
         log_event(config.db_path, level, "panel", action, message)
     except Exception:
         pass
+
+
+def security_warnings() -> list[str]:
+    warnings = []
+    if not auth_enabled():
+        warnings.append("BARRIER_PANEL_PASSWORD is not set.")
+    if insecure_secret_configured():
+        warnings.append("BARRIER_FLASK_SECRET_KEY is missing or uses a default value.")
+    return warnings
 
 
 def systemctl_value(service: str, field: str) -> str:
@@ -659,15 +774,35 @@ def allowed_device_statuses(
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
+    if panel_locked_by_missing_password():
+        return render_template_string(SECURITY_SETUP_HTML), 503
     if not auth_enabled():
         return redirect(url_for("index"))
 
     if request.method == "POST":
+        now = int(time.time())
+        locked_until = int(session.get("login_locked_until", 0) or 0)
+        if locked_until > now:
+            log_panel_event("login-locked", "Login attempt rejected during lockout", "WARN")
+            return render_template_string(LOGIN_HTML, error="Слишком много попыток. Попробуйте позже"), 429
+
         password = request.form.get("password", "")
         if secrets.compare_digest(password, config.panel_password):
             session["authenticated"] = True
+            session.pop("login_attempts", None)
+            session.pop("login_locked_until", None)
             log_panel_event("login", "Вход в web-панель")
             return redirect(url_for("index"))
+
+        attempts = int(session.get("login_attempts", 0) or 0) + 1
+        session["login_attempts"] = attempts
+        if attempts >= LOGIN_ATTEMPT_LIMIT:
+            session["login_locked_until"] = now + LOGIN_LOCKOUT_SECONDS
+            session["login_attempts"] = 0
+            log_panel_event("login-lockout", "Too many invalid login attempts", "WARN")
+            return render_template_string(LOGIN_HTML, error="Слишком много попыток. Попробуйте позже"), 429
+
+        log_panel_event("login-failed", "Invalid panel password", "WARN")
         return render_template_string(LOGIN_HTML, error="Неверный пароль")
 
     return render_template_string(LOGIN_HTML, error="")
@@ -708,6 +843,7 @@ def index():
         bluetooth_status=bluetooth_status,
         wifi_status=wifi_status,
         wifi_auto_open=config.wifi_auto_open,
+        security_warnings=security_warnings(),
     )
 
 
@@ -811,6 +947,13 @@ def diagnostic_report():
         lines.extend(["", f"## {title}", f"ok={ok}", output or "(no output)"])
 
     lines.append("")
+    lines.append("Security warnings:")
+    for warning in security_warnings():
+        lines.append(f"- {warning}")
+    if not security_warnings():
+        lines.append("- none")
+
+    lines.append("")
     lines.append("Recent events:")
     for event in recent_events(config.db_path, 30):
         lines.append(f"{event[1]} | {event[2]} | {event[3]} | {event[4]} | {event[5]}")
@@ -821,6 +964,25 @@ def diagnostic_report():
         mimetype="text/plain; charset=utf-8",
         headers={"Content-Disposition": "attachment; filename=barrier-diagnostic.txt"},
     )
+
+
+@app.route("/healthz", methods=["GET"])
+def healthz():
+    try:
+        init_db(config.db_path)
+        bluetooth_status = latest_bluetooth_status(config.db_path)
+        wifi_status = latest_wifi_status(config.db_path)
+        warnings = security_warnings()
+        payload = {
+            "ok": not warnings,
+            "db": "ok",
+            "bluetooth_status": bluetooth_status.get("status") if bluetooth_status else "missing",
+            "wifi_status": wifi_status.get("status") if wifi_status else "missing",
+            "security_warnings": warnings,
+        }
+        return jsonify(payload), 200 if payload["ok"] else 503
+    except Exception as exc:
+        return jsonify({"ok": False, "db": "error", "error": str(exc)}), 503
 
 
 @app.route("/sync-time", methods=["POST"])

@@ -6,7 +6,7 @@ import time
 
 from barrier_bluetooth import apply_device_info, detect_allowed_presence_from_details, parse_devices_output
 from barrier_config import Config
-from barrier_db import init_db, latest_bluetooth_status, latest_wifi_status, normalize_mac, save_bluetooth_status, save_wifi_status
+from barrier_db import init_db, latest_bluetooth_status, latest_wifi_status, log_event, normalize_mac, recent_events, save_bluetooth_status, save_wifi_status
 from barrier_presence import detect_any_target_presence, process_presence, validate_mac
 from barrier_types import PresenceStatus, State
 from barrier_wifi import detect_allowed_wifi_presence, parse_iw_station_dump
@@ -219,6 +219,27 @@ Station 11:22:33:44:55:66 (on wlan0)
         self.assertEqual(status["presence_status"], "present")
         self.assertEqual(status["min_signal"], -70)
         self.assertTrue(status["allowed_present"])
+
+    def test_event_log_limit_prunes_old_events(self) -> None:
+        old_limit = os.environ.get("BARRIER_EVENT_LOG_LIMIT")
+        os.environ["BARRIER_EVENT_LOG_LIMIT"] = "2"
+        self.addCleanup(
+            lambda: os.environ.pop("BARRIER_EVENT_LOG_LIMIT", None)
+            if old_limit is None
+            else os.environ.__setitem__("BARRIER_EVENT_LOG_LIMIT", old_limit)
+        )
+
+        db_file = tempfile.NamedTemporaryFile(suffix=".db", dir=".", delete=False)
+        db_file.close()
+        self.addCleanup(remove_if_unlocked, db_file.name)
+        init_db(db_file.name)
+
+        log_event(db_file.name, "INFO", "test", "one", "one")
+        log_event(db_file.name, "INFO", "test", "two", "two")
+        log_event(db_file.name, "INFO", "test", "three", "three")
+
+        events = recent_events(db_file.name, 10)
+        self.assertEqual([event[4] for event in events], ["three", "two"])
 
 
 if __name__ == "__main__":

@@ -8,6 +8,8 @@ LOCAL_SOURCE_DIR="${LOCAL_SOURCE_DIR:-}"
 INSTALL_SYSTEM_PACKAGES="${INSTALL_SYSTEM_PACKAGES:-true}"
 PIP_OFFLINE="${PIP_OFFLINE:-false}"
 WHEELHOUSE_DIR="${WHEELHOUSE_DIR:-}"
+PANEL_PASSWORD="${BARRIER_PANEL_PASSWORD:-${PANEL_PASSWORD:-}}"
+PANEL_SECRET_KEY="${BARRIER_FLASK_SECRET_KEY:-${PANEL_SECRET_KEY:-}}"
 
 APP_DIR="/opt/barrier"
 SRC_DIR="${APP_DIR}/src"
@@ -29,6 +31,7 @@ PANEL_SERVICE_FILE="/etc/systemd/system/${PANEL_SERVICE_NAME}"
 WATCHDOG_SERVICE_FILE="/etc/systemd/system/${WATCHDOG_SERVICE_NAME}"
 WATCHDOG_TIMER_FILE="/etc/systemd/system/${WATCHDOG_TIMER_NAME}"
 PANEL_SUDOERS_FILE="/etc/sudoers.d/barrier-panel-management"
+PANEL_CREDENTIALS_FILE="${APP_DIR}/panel_credentials.txt"
 
 log() {
   echo "[INFO] $*"
@@ -40,6 +43,30 @@ warn() {
 
 err() {
   echo "[ERROR] $*" >&2
+}
+
+random_token() {
+  "$PYTHON_BIN" -c 'import secrets; print(secrets.token_urlsafe(32))'
+}
+
+prepare_panel_security() {
+  if [[ -z "$PANEL_PASSWORD" ]]; then
+    PANEL_PASSWORD="$(random_token)"
+    warn "BARRIER_PANEL_PASSWORD РЅРµ Р·Р°РґР°РЅ, СЃРіРµРЅРµСЂРёСЂРѕРІР°РЅ РЅРѕРІС‹Р№ РїР°СЂРѕР»СЊ web-РїР°РЅРµР»Рё"
+  fi
+
+  if [[ -z "$PANEL_SECRET_KEY" || "$PANEL_SECRET_KEY" == "change-me" || "$PANEL_SECRET_KEY" == "barrier-panel-local-secret" ]]; then
+    PANEL_SECRET_KEY="$(random_token)"
+    warn "BARRIER_FLASK_SECRET_KEY РЅРµ Р·Р°РґР°РЅ РёР»Рё РЅРµР±РµР·РѕРїР°СЃРµРЅ, СЃРіРµРЅРµСЂРёСЂРѕРІР°РЅ РЅРѕРІС‹Р№ СЃРµРєСЂРµС‚"
+  fi
+
+  mkdir -p "$APP_DIR"
+  cat > "$PANEL_CREDENTIALS_FILE" <<EOF
+BARRIER_PANEL_PASSWORD=${PANEL_PASSWORD}
+BARRIER_FLASK_SECRET_KEY=${PANEL_SECRET_KEY}
+EOF
+  chmod 0600 "$PANEL_CREDENTIALS_FILE"
+  chown "${SERVICE_USER}:${SERVICE_GROUP}" "$PANEL_CREDENTIALS_FILE" 2>/dev/null || true
 }
 
 require_root() {
@@ -227,6 +254,8 @@ ExecStart=${VENV_PYTHON} ${SRC_DIR}/panel.py
 Environment=BARRIER_DB_PATH=${APP_DIR}/barrier.db
 Environment=BARRIER_BACKUP_DIR=${APP_DIR}/backups
 Environment=BARRIER_SCRIPT=${SRC_DIR}/barrier_service.py
+Environment=BARRIER_PANEL_PASSWORD=${PANEL_PASSWORD}
+Environment=BARRIER_FLASK_SECRET_KEY=${PANEL_SECRET_KEY}
 Restart=always
 RestartSec=3
 
@@ -326,6 +355,8 @@ Virtualenv:
 
 Web-панель:
   http://<IP_ОДНОПЛАТНИКА>:8080
+  Пароль: ${PANEL_PASSWORD}
+  Файл с данными входа: ${PANEL_CREDENTIALS_FILE}
 
 Текущие IP:
   ${ips}
@@ -340,6 +371,7 @@ main() {
   require_root
   install_packages
   prepare_dirs
+  prepare_panel_security
   fetch_repo
   check_repo_files
   create_compat_symlinks

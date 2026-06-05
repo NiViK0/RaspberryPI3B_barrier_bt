@@ -274,6 +274,7 @@ sudo systemctl restart barrier.service barrier-panel.service
 BARRIER_DB_PATH=/opt/barrier/barrier.db
 BARRIER_BACKUP_DIR=/opt/barrier/backups
 BARRIER_SCRIPT=/opt/barrier/src/barrier_service.py
+BARRIER_EVENT_LOG_LIMIT=2000
 
 BARRIER_RELAY_PORT=/dev/ttyUSB0
 BARRIER_RELAY_PORT=auto
@@ -296,8 +297,8 @@ BARRIER_WIFI_LEASES_PATH=/var/lib/misc/dnsmasq.leases
 
 BARRIER_PANEL_HOST=0.0.0.0
 BARRIER_PANEL_PORT=8080
-BARRIER_PANEL_PASSWORD=
-BARRIER_FLASK_SECRET_KEY=change-me
+BARRIER_PANEL_PASSWORD=replace-with-strong-password
+BARRIER_FLASK_SECRET_KEY=replace-with-random-secret
 ```
 
 `BARRIER_RELAY_PORT=auto` включает поиск первого доступного порта из `/dev/ttyUSB*` и `/dev/ttyACM*`.
@@ -314,7 +315,7 @@ BARRIER_FLASK_SECRET_KEY=change-me
 
 `BARRIER_WIFI_MAX_INACTIVE_MS=60000` игнорирует Wi-Fi-станции, которые давно не обменивались трафиком. Значение `0` отключает этот фильтр.
 
-`BARRIER_PANEL_PASSWORD` включает пароль для web-панели. Если переменная пустая, панель доступна без логина.
+`BARRIER_PANEL_PASSWORD` включает пароль для web-панели. Если панель слушает внешний адрес (`0.0.0.0`) и пароль пустой, web-панель блокируется до настройки пароля.
 
 `BARRIER_FLASK_SECRET_KEY` нужен Flask-сессиям. Для реального устройства лучше задать свое случайное значение.
 

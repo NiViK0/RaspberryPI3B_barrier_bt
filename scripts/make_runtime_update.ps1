@@ -64,13 +64,7 @@ try {
     Write-Host "  mkdir -p $remoteDir"
     Write-Host "  tar -xzf $remoteArchive -C $remoteDir"
     Write-Host "  find $remoteDir -name '*.sh' -exec sed -i 's/\r$//' {} +"
-    Write-Host "  sudo cp -a /opt/barrier/src `"/opt/barrier/src.backup.`$(date +%Y%m%d-%H%M%S)`""
-    Write-Host "  sudo cp -a /opt/barrier/barrier.db `"/opt/barrier/barrier.db.backup.`$(date +%Y%m%d-%H%M%S)`""
-    Write-Host "  sudo rsync -a --delete --exclude '.git' --exclude 'deploy' --exclude 'archive' $remoteDir/ /opt/barrier/src/"
-    Write-Host "  sudo chown -R ${RemoteUser}:${RemoteUser} /opt/barrier/src"
-    Write-Host "  sudo chmod +x /opt/barrier/src/scripts/*.sh"
-    Write-Host "  /opt/barrier/venv/bin/python /opt/barrier/src/barrier_service.py init-db"
-    Write-Host "  sudo systemctl restart barrier.service barrier-panel.service"
+    Write-Host "  sudo bash $remoteDir/scripts/apply_runtime_update.sh $remoteDir"
 }
 finally {
     Pop-Location
