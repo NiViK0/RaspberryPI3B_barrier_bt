@@ -10,13 +10,16 @@ from flask import Flask, Response, abort, has_request_context, jsonify, redirect
 
 from barrier_config import load_config
 from barrier_db import (
+    add_device as db_add_device,
     device_counts,
     init_db,
     latest_bluetooth_status,
     latest_wifi_status,
+    list_devices_detailed,
     list_devices,
     log_event,
     normalize_mac,
+    recent_open_events,
     recent_events,
 )
 
@@ -182,6 +185,7 @@ HTML = """
               <th>RSSI</th>
               <th>Подключено</th>
               <th>Допущено</th>
+              <th>Действие</th>
             </tr>
           </thead>
           <tbody>
@@ -192,6 +196,19 @@ HTML = """
                 <td>{% if d.rssi is not none %}{{ d.rssi }} dBm{% else %}<span class="muted">n/a</span>{% endif %}</td>
                 <td>{% if d.connected %}<span class="badge badge-ok">yes</span>{% else %}<span class="badge">no</span>{% endif %}</td>
                 <td>{% if d.allowed %}<span class="badge badge-ok">yes</span>{% else %}<span class="badge badge-bad">no</span>{% endif %}</td>
+                <td>
+                  {% if not d.allowed %}
+                    <form method="post" action="{{ url_for('allow_found_device') }}">
+                      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                      <input type="hidden" name="mac" value="{{ d.mac }}">
+                      <input type="hidden" name="device_type" value="ble">
+                      <input type="text" name="profile_name" value="{{ d.name }}" placeholder="Профиль">
+                      <button type="submit">Разрешить</button>
+                    </form>
+                  {% else %}
+                    <span class="muted">ok</span>
+                  {% endif %}
+                </td>
               </tr>
             {% endfor %}
           </tbody>
@@ -254,6 +271,7 @@ HTML = """
               <th>Неактивность</th>
               <th>Допущено</th>
               <th>Активно</th>
+              <th>Действие</th>
             </tr>
           </thead>
           <tbody>
@@ -266,6 +284,19 @@ HTML = """
                 <td>{% if s.inactive_ms is not none %}{{ s.inactive_ms }} ms{% else %}<span class="muted">n/a</span>{% endif %}</td>
                 <td>{% if s.allowed %}<span class="badge badge-ok">yes</span>{% else %}<span class="badge badge-bad">no</span>{% endif %}</td>
                 <td>{% if s.active %}<span class="badge badge-ok">yes</span>{% else %}<span class="badge">no</span>{% endif %}</td>
+                <td>
+                  {% if not s.allowed %}
+                    <form method="post" action="{{ url_for('allow_found_device') }}">
+                      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                      <input type="hidden" name="mac" value="{{ s.mac }}">
+                      <input type="hidden" name="device_type" value="wifi">
+                      <input type="text" name="profile_name" value="{{ s.name }}" placeholder="Профиль">
+                      <button type="submit">Разрешить</button>
+                    </form>
+                  {% else %}
+                    <span class="muted">ok</span>
+                  {% endif %}
+                </td>
               </tr>
             {% endfor %}
           </tbody>
@@ -400,8 +431,12 @@ HTML = """
     <h2>Добавить устройство</h2>
     <form method="post" action="{{ url_for('add_device') }}">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <label>Профиль</label>
+      <input type="text" name="profile_name" placeholder="Например: POCO X7 Pro" required>
       <label>Имя</label>
       <input type="text" name="name" placeholder="Например: Мой телефон" required>
+      <label>Тип</label>
+      <input type="text" name="device_type" placeholder="wifi или ble">
       <label>MAC-адрес</label>
       <input type="text" name="mac" placeholder="AA:BB:CC:DD:EE:FF" required>
       <button type="submit">Добавить</button>
@@ -410,11 +445,13 @@ HTML = """
 
   <div class="card">
     <h2>Разрешённые устройства</h2>
-    {% if devices %}
+    {% if device_details %}
     <table>
       <thead>
         <tr>
           <th>ID</th>
+          <th>Профиль</th>
+          <th>Тип</th>
           <th>Имя</th>
           <th>MAC</th>
           <th>Статус</th>
@@ -422,25 +459,27 @@ HTML = """
         </tr>
       </thead>
       <tbody>
-        {% for d in devices %}
+        {% for d in device_details %}
           <tr>
-            <td>{{ d[0] }}</td>
-            <td>{{ d[1] }}</td>
-            <td>{{ d[2] }}</td>
-            <td>{% if d[3] %}Включено{% else %}Отключено{% endif %}</td>
+            <td>{{ d.id }}</td>
+            <td>{{ d.profile_name }}</td>
+            <td>{{ d.device_type }}</td>
+            <td>{{ d.name }}</td>
+            <td>{{ d.mac }}</td>
+            <td>{% if d.enabled %}Включено{% else %}Отключено{% endif %}</td>
             <td class="actions">
-              {% if d[3] %}
-              <form method="post" action="{{ url_for('disable_device', mac=d[2]) }}">
+              {% if d.enabled %}
+              <form method="post" action="{{ url_for('disable_device', mac=d.mac) }}">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <button type="submit">Отключить</button>
               </form>
               {% else %}
-              <form method="post" action="{{ url_for('enable_device', mac=d[2]) }}">
+              <form method="post" action="{{ url_for('enable_device', mac=d.mac) }}">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <button type="submit">Включить</button>
               </form>
               {% endif %}
-              <form method="post" action="{{ url_for('remove_device', mac=d[2]) }}" onsubmit="return confirm('Удалить устройство?');">
+              <form method="post" action="{{ url_for('remove_device', mac=d.mac) }}" onsubmit="return confirm('Удалить устройство?');">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <button type="submit">Удалить</button>
               </form>
@@ -451,6 +490,42 @@ HTML = """
     </table>
     {% else %}
       <p class="muted">Список устройств пуст.</p>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <h2>История открытий</h2>
+    {% if open_events %}
+    <table>
+      <thead>
+        <tr>
+          <th>Время</th>
+          <th>Решение</th>
+          <th>Источник</th>
+          <th>Профиль</th>
+          <th>Устройство</th>
+          <th>MAC</th>
+          <th>Сигнал</th>
+          <th>Сообщение</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for event in open_events %}
+          <tr>
+            <td>{{ event.created_at }}</td>
+            <td>{{ event.decision }}</td>
+            <td>{{ event.source }}</td>
+            <td>{{ event.profile_name }}</td>
+            <td>{{ event.device_name }}</td>
+            <td class="mono">{{ event.mac }}</td>
+            <td>{% if event.signal is not none %}{{ event.signal }} dBm{% else %}<span class="muted">n/a</span>{% endif %}</td>
+            <td>{{ event.message }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+      <p class="muted">Открытий пока нет.</p>
     {% endif %}
   </div>
 
@@ -822,14 +897,17 @@ def index():
     success = request.args.get("success", "1") == "1"
     total_devices, enabled_devices = device_counts(config.db_path)
     devices = list_devices(config.db_path)
+    device_details = list_devices_detailed(config.db_path)
     bluetooth_status = bluetooth_status_for_view()
     wifi_status = wifi_status_for_view()
     return render_template_string(
         HTML,
         auth_enabled=auth_enabled(),
         devices=devices,
+        device_details=device_details,
         allowed_statuses=allowed_device_statuses(devices, bluetooth_status, wifi_status),
         events=recent_events(config.db_path, 20),
+        open_events=recent_open_events(config.db_path, 20),
         message=message,
         success=success,
         total_devices=total_devices,
@@ -852,8 +930,32 @@ def index():
 def add_device():
     name = request.form.get("name", "").strip()
     mac = request.form.get("mac", "").strip()
+    profile_name = request.form.get("profile_name", "").strip() or name
+    device_type = request.form.get("device_type", "").strip() or "unknown"
     log_panel_event("device-add-request", f"Запрос добавления: {name} [{mac}]")
-    return run_and_redirect(["add", mac, name])
+    try:
+        init_db(config.db_path)
+        db_add_device(config.db_path, mac, name, device_type, profile_name)
+        log_panel_event("device-add", f"Added {device_type} device {profile_name}: {name} [{normalize_mac(mac)}]")
+        return redirect_with_result(True, f"Устройство добавлено: {profile_name} [{normalize_mac(mac)}]")
+    except Exception as exc:
+        return redirect_with_result(False, f"Не удалось добавить устройство: {exc}")
+
+
+@app.route("/allow-found", methods=["POST"])
+@login_required
+def allow_found_device():
+    mac = request.form.get("mac", "").strip()
+    device_type = request.form.get("device_type", "").strip().lower() or "unknown"
+    profile_name = request.form.get("profile_name", "").strip() or mac
+    name = f"{profile_name} {device_type.upper()}".strip()
+    try:
+        init_db(config.db_path)
+        db_add_device(config.db_path, mac, name, device_type, profile_name)
+        log_panel_event("device-allow-found", f"Allowed found {device_type}: {profile_name} [{normalize_mac(mac)}]")
+        return redirect_with_result(True, f"Разрешено: {profile_name} [{normalize_mac(mac)}]")
+    except Exception as exc:
+        return redirect_with_result(False, f"Не удалось разрешить устройство: {exc}")
 
 
 @app.route("/enable/<mac>", methods=["POST"])
@@ -957,6 +1059,15 @@ def diagnostic_report():
     lines.append("Recent events:")
     for event in recent_events(config.db_path, 30):
         lines.append(f"{event[1]} | {event[2]} | {event[3]} | {event[4]} | {event[5]}")
+
+    lines.append("")
+    lines.append("Recent open events:")
+    for event in recent_open_events(config.db_path, 30):
+        lines.append(
+            f"{event['created_at']} | {event['decision']} | {event['source']} | "
+            f"{event['profile_name']} | {event['device_name']} | {event['mac']} | "
+            f"{event['signal']} | {event['message']}"
+        )
 
     body = "\n".join(lines) + "\n"
     return Response(

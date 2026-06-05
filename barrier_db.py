@@ -52,6 +52,21 @@ def init_db(db_path: str) -> None:
         )
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS open_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                source TEXT NOT NULL,
+                profile_name TEXT NOT NULL DEFAULT '',
+                device_name TEXT NOT NULL DEFAULT '',
+                mac TEXT NOT NULL DEFAULT '',
+                signal INTEGER,
+                decision TEXT NOT NULL,
+                message TEXT NOT NULL DEFAULT ''
+            )
+            """
+        )
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS bluetooth_status (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -95,6 +110,18 @@ def init_db(db_path: str) -> None:
             )
             """
         )
+        ensure_column(conn, "allowed_devices", "profile_name", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(conn, "allowed_devices", "device_type", "TEXT NOT NULL DEFAULT 'unknown'")
+        conn.execute(
+            """
+            UPDATE allowed_devices
+            SET profile_name = name
+            WHERE profile_name = ''
+            """
+        )
+        ensure_column(conn, "open_events", "profile_name", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(conn, "open_events", "device_name", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(conn, "open_events", "signal", "INTEGER")
         ensure_column(conn, "bluetooth_status", "presence_status", "TEXT NOT NULL DEFAULT 'unknown'")
         ensure_column(conn, "bluetooth_status", "missing_count", "INTEGER NOT NULL DEFAULT 0")
         ensure_column(conn, "bluetooth_status", "missing_threshold", "INTEGER NOT NULL DEFAULT 0")
@@ -115,18 +142,29 @@ def ensure_column(conn: sqlite3.Connection, table: str, column: str, definition:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
-def add_device(db_path: str, mac: str, name: str) -> None:
+def add_device(
+    db_path: str,
+    mac: str,
+    name: str,
+    device_type: str = "unknown",
+    profile_name: str | None = None,
+) -> None:
     mac = normalize_mac(mac)
+    clean_name = name.strip() or mac
+    clean_profile = (profile_name or clean_name).strip() or clean_name
+    clean_type = device_type.strip().lower() or "unknown"
     with closing(sqlite3.connect(db_path)) as conn:
         conn.execute(
             """
-            INSERT INTO allowed_devices(name, mac, enabled)
-            VALUES (?, ?, 1)
+            INSERT INTO allowed_devices(name, mac, enabled, profile_name, device_type)
+            VALUES (?, ?, 1, ?, ?)
             ON CONFLICT(mac) DO UPDATE SET
                 name = excluded.name,
-                enabled = 1
+                enabled = 1,
+                profile_name = excluded.profile_name,
+                device_type = excluded.device_type
             """,
-            (name.strip(), mac),
+            (clean_name, mac, clean_profile, clean_type),
         )
         conn.commit()
 
@@ -136,6 +174,28 @@ def list_devices(db_path: str) -> list[DeviceRow]:
         return conn.execute(
             "SELECT id, name, mac, enabled FROM allowed_devices ORDER BY name"
         ).fetchall()
+
+
+def list_devices_detailed(db_path: str) -> list[dict[str, object]]:
+    with closing(sqlite3.connect(db_path)) as conn:
+        rows = conn.execute(
+            """
+            SELECT id, name, mac, enabled, profile_name, device_type
+            FROM allowed_devices
+            ORDER BY profile_name, name
+            """
+        ).fetchall()
+    return [
+        {
+            "id": row[0],
+            "name": row[1],
+            "mac": normalize_mac(row[2]),
+            "enabled": bool(row[3]),
+            "profile_name": row[4] or row[1],
+            "device_type": row[5] or "unknown",
+        }
+        for row in rows
+    ]
 
 
 def set_device_enabled(db_path: str, mac: str, enabled: bool) -> bool:
@@ -163,6 +223,15 @@ def get_enabled_macs(db_path: str) -> list[str]:
             "SELECT mac FROM allowed_devices WHERE enabled = 1"
         ).fetchall()
     return [normalize_mac(row[0]) for row in rows]
+
+
+def get_enabled_device_map(db_path: str) -> dict[str, dict[str, object]]:
+    devices = list_devices_detailed(db_path)
+    return {
+        str(device["mac"]): device
+        for device in devices
+        if device["enabled"]
+    }
 
 
 def log_event(db_path: str, level: str, source: str, action: str, message: str) -> None:
@@ -199,6 +268,62 @@ def recent_events(db_path: str, limit: int = 20) -> list[EventRow]:
             """,
             (limit,),
         ).fetchall()
+
+
+def log_open_event(
+    db_path: str,
+    source: str,
+    profile_name: str,
+    device_name: str,
+    mac: str,
+    signal: int | None,
+    decision: str,
+    message: str = "",
+) -> None:
+    with closing(sqlite3.connect(db_path)) as conn:
+        conn.execute(
+            """
+            INSERT INTO open_events(source, profile_name, device_name, mac, signal, decision, message)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                source,
+                profile_name,
+                device_name,
+                normalize_mac(mac) if mac else "",
+                signal,
+                decision,
+                message,
+            ),
+        )
+        conn.commit()
+
+
+def recent_open_events(db_path: str, limit: int = 50) -> list[dict[str, object]]:
+    with closing(sqlite3.connect(db_path)) as conn:
+        rows = conn.execute(
+            """
+            SELECT id, created_at, source, profile_name, device_name, mac, signal, decision, message
+            FROM open_events
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    return [
+        {
+            "id": row[0],
+            "created_at": row[1],
+            "source": row[2],
+            "profile_name": row[3],
+            "device_name": row[4],
+            "mac": row[5],
+            "signal": row[6],
+            "decision": row[7],
+            "message": row[8],
+        }
+        for row in rows
+    ]
 
 
 def device_counts(db_path: str) -> tuple[int, int]:

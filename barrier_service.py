@@ -15,9 +15,11 @@ from barrier_config import Config, load_config
 from barrier_db import (
     add_device,
     backup_db,
+    get_enabled_device_map,
     get_enabled_macs,
     init_db,
     list_devices,
+    log_open_event,
     log_event,
     normalize_mac,
     remove_device,
@@ -202,19 +204,55 @@ def combine_presence_statuses(statuses: list[PresenceStatus]) -> PresenceStatus:
     return PresenceStatus.SCAN_FAILED
 
 
+def select_trigger_context(
+    wifi_details: dict[str, object] | None,
+    ble_details: dict[str, object] | None,
+    enabled_devices: dict[str, dict[str, object]],
+) -> dict[str, object] | None:
+    if wifi_details:
+        for station in wifi_details.get("stations", []):  # type: ignore[union-attr]
+            if not isinstance(station, dict) or not station.get("allowed") or not station.get("active"):
+                continue
+            mac = normalize_mac(str(station.get("mac", "")))
+            device = enabled_devices.get(mac, {})
+            return {
+                "source": "wifi",
+                "mac": mac,
+                "signal": station.get("signal"),
+                "device_name": device.get("name") or station.get("name") or mac,
+                "profile_name": device.get("profile_name") or device.get("name") or station.get("name") or mac,
+            }
+
+    if ble_details:
+        for device_seen in ble_details.get("devices", []):  # type: ignore[union-attr]
+            if not isinstance(device_seen, dict) or not device_seen.get("allowed"):
+                continue
+            mac = normalize_mac(str(device_seen.get("mac", "")))
+            device = enabled_devices.get(mac, {})
+            return {
+                "source": "ble",
+                "mac": mac,
+                "signal": device_seen.get("rssi"),
+                "device_name": device.get("name") or device_seen.get("name") or mac,
+                "profile_name": device.get("profile_name") or device.get("name") or device_seen.get("name") or mac,
+            }
+
+    return None
+
+
 def cmd_init_db(config: Config) -> None:
     init_db(config.db_path)
     log_db_event(config, "INFO", "cli", "init-db", f"База инициализирована: {config.db_path}")
     print(f"База инициализирована: {config.db_path}")
 
 
-def cmd_add(config: Config, mac: str, name: str) -> None:
+def cmd_add(config: Config, mac: str, name: str, device_type: str = "unknown", profile_name: str | None = None) -> None:
     init_db(config.db_path)
     normalized_mac = normalize_mac(mac)
     if not validate_mac(normalized_mac):
         raise ValueError(f"Некорректный MAC: {normalized_mac}")
 
-    add_device(config.db_path, normalized_mac, name)
+    add_device(config.db_path, normalized_mac, name, device_type, profile_name)
     log_db_event(config, "INFO", "cli", "device-add", f"Добавлено: {name} [{normalized_mac}]")
     print(f"Добавлено: {name} [{normalized_mac}]")
 
@@ -276,18 +314,21 @@ def pulse_relay_once(config: Config) -> None:
 
 def cmd_test_open(config: Config) -> None:
     pulse_relay_once(config)
+    log_open_event(config.db_path, "test", "", "relay-test", "", None, "opened", "test-open command")
     log_db_event(config, "INFO", "cli", "relay-test", "Тестовый импульс на реле отправлен")
     print("Тестовый импульс на реле отправлен")
 
 
 def cmd_manual_open(config: Config) -> None:
     pulse_relay_once(config)
+    log_open_event(config.db_path, "manual", "", "manual-open", "", None, "opened", "manual-open command")
     log_db_event(config, "INFO", "cli", "manual-open", "Шлагбаум открыт вручную")
     print("Шлагбаум открыт вручную")
 
 
 def cmd_emergency_open(config: Config) -> None:
     pulse_relay_once(config)
+    log_open_event(config.db_path, "emergency", "", "emergency-open", "", None, "opened", "emergency-open command")
     log_db_event(config, "WARN", "cli", "emergency-open", "Аварийное открытие шлагбаума")
     print("Аварийное открытие шлагбаума выполнено")
 
@@ -363,6 +404,7 @@ def cmd_run(config: Config) -> None:
     init_db(config.db_path)
     state = State()
     bt = BluetoothCtlSession() if config.bluetooth_enabled else None
+    trigger_context: dict[str, object] | None = None
 
     def trigger_action(action: str) -> bool:
         try:
@@ -377,6 +419,18 @@ def cmd_run(config: Config) -> None:
             return False
 
         log_db_event(config, "INFO", "service", f"barrier-{action}", f"Импульс реле: {action}")
+        context = trigger_context or {}
+        if action == "open":
+            log_open_event(
+                config.db_path,
+                str(context.get("source") or "unknown"),
+                str(context.get("profile_name") or ""),
+                str(context.get("device_name") or ""),
+                str(context.get("mac") or ""),
+                int(context["signal"]) if context.get("signal") is not None else None,
+                "opened",
+                f"auto-open via {context.get('source') or 'unknown'}",
+            )
         return True
 
     try:
@@ -418,6 +472,7 @@ def cmd_run(config: Config) -> None:
         with RelayController(config) as relay:
             while True:
                 allowed_macs = get_enabled_macs(config.db_path)
+                enabled_devices = get_enabled_device_map(config.db_path)
 
                 statuses: list[PresenceStatus] = []
                 combined_outputs: list[str] = []
@@ -470,6 +525,7 @@ def cmd_run(config: Config) -> None:
                     statuses.append(wifi_presence)
 
                 combined_presence = combine_presence_statuses(statuses)
+                trigger_context = select_trigger_context(wifi_details, ble_details, enabled_devices)
                 process_presence(
                     combined_presence,
                     "\n\n".join(combined_outputs),
@@ -517,7 +573,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_add = subparsers.add_parser("add", help="Добавить или обновить устройство")
     p_add.add_argument("mac", help="MAC-адрес телефона")
     p_add.add_argument("name", help="Имя устройства")
-    p_add.set_defaults(handler=lambda config, args: cmd_add(config, args.mac, args.name))
+    p_add.add_argument("--type", default="unknown", choices=["wifi", "ble", "unknown"], help="MAC type: wifi/ble/unknown")
+    p_add.add_argument("--profile", default=None, help="Phone/profile name")
+    p_add.set_defaults(handler=lambda config, args: cmd_add(config, args.mac, args.name, args.type, args.profile))
 
     p_enable = subparsers.add_parser("enable", help="Включить устройство")
     p_enable.add_argument("mac", help="MAC-адрес устройства")

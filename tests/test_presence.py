@@ -6,8 +6,9 @@ import time
 
 from barrier_bluetooth import apply_device_info, detect_allowed_presence_from_details, parse_devices_output
 from barrier_config import Config
-from barrier_db import init_db, latest_bluetooth_status, latest_wifi_status, log_event, normalize_mac, recent_events, save_bluetooth_status, save_wifi_status
+from barrier_db import add_device, get_enabled_device_map, init_db, latest_bluetooth_status, latest_wifi_status, list_devices_detailed, log_event, log_open_event, normalize_mac, recent_events, recent_open_events, save_bluetooth_status, save_wifi_status
 from barrier_presence import detect_any_target_presence, process_presence, validate_mac
+from barrier_service import select_trigger_context
 from barrier_types import PresenceStatus, State
 from barrier_wifi import detect_allowed_wifi_presence, parse_iw_station_dump
 
@@ -240,6 +241,71 @@ Station 11:22:33:44:55:66 (on wlan0)
 
         events = recent_events(db_file.name, 10)
         self.assertEqual([event[4] for event in events], ["three", "two"])
+
+    def test_device_profile_and_open_event_roundtrip(self) -> None:
+        db_file = tempfile.NamedTemporaryFile(suffix=".db", dir=".", delete=False)
+        db_file.close()
+        self.addCleanup(remove_if_unlocked, db_file.name)
+        init_db(db_file.name)
+
+        add_device(db_file.name, "aa:bb:cc:dd:ee:ff", "Phone Wi-Fi", "wifi", "Driver Phone")
+        devices = list_devices_detailed(db_file.name)
+
+        self.assertEqual(devices[0]["profile_name"], "Driver Phone")
+        self.assertEqual(devices[0]["device_type"], "wifi")
+
+        log_open_event(
+            db_file.name,
+            "wifi",
+            "Driver Phone",
+            "Phone Wi-Fi",
+            "AA:BB:CC:DD:EE:FF",
+            -61,
+            "opened",
+            "auto-open via wifi",
+        )
+        events = recent_open_events(db_file.name, 5)
+        self.assertEqual(events[0]["source"], "wifi")
+        self.assertEqual(events[0]["profile_name"], "Driver Phone")
+        self.assertEqual(events[0]["decision"], "opened")
+
+    def test_select_trigger_context_prefers_wifi_over_ble(self) -> None:
+        db_file = tempfile.NamedTemporaryFile(suffix=".db", dir=".", delete=False)
+        db_file.close()
+        self.addCleanup(remove_if_unlocked, db_file.name)
+        init_db(db_file.name)
+        add_device(db_file.name, "AA:BB:CC:DD:EE:FF", "Phone Wi-Fi", "wifi", "Driver Phone")
+        add_device(db_file.name, "11:22:33:44:55:66", "Phone BLE", "ble", "Driver Phone")
+
+        context = select_trigger_context(
+            {
+                "stations": [
+                    {
+                        "mac": "AA:BB:CC:DD:EE:FF",
+                        "name": "Phone",
+                        "allowed": True,
+                        "active": True,
+                        "signal": -64,
+                    }
+                ]
+            },
+            {
+                "devices": [
+                    {
+                        "mac": "11:22:33:44:55:66",
+                        "name": "Phone BLE",
+                        "allowed": True,
+                        "rssi": -55,
+                    }
+                ]
+            },
+            get_enabled_device_map(db_file.name),
+        )
+
+        self.assertIsNotNone(context)
+        assert context is not None
+        self.assertEqual(context["source"], "wifi")
+        self.assertEqual(context["profile_name"], "Driver Phone")
 
 
 if __name__ == "__main__":
