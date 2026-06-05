@@ -14,14 +14,6 @@ def validate_mac(mac: str) -> bool:
     return bool(re.fullmatch(r"([0-9A-F]{2}:){5}[0-9A-F]{2}", normalize_mac(mac)))
 
 
-def detect_any_target_presence(devices_output: str, allowed_macs: list[str]) -> PresenceStatus:
-    devices_upper = devices_output.upper()
-    for mac in allowed_macs:
-        if normalize_mac(mac) in devices_upper:
-            logging.info("Обнаружен разрешённый MAC: %s", normalize_mac(mac))
-            return PresenceStatus.PRESENT
-    return PresenceStatus.ABSENT
-
 
 def trigger_barrier(config: Config, state: State, action: str, trigger_action: TriggerAction) -> bool:
     if action != "open":

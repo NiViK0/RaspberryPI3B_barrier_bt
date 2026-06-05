@@ -48,80 +48,25 @@ def log_db_event(config: Config, level: str, source: str, action: str, message: 
         logging.debug("Не удалось записать событие в БД", exc_info=True)
 
 
-def save_scan_status(
-    config: Config,
-    status: PresenceStatus,
-    devices_output: str,
-    allowed_macs: list[str],
-    bt: BluetoothCtlSession,
-) -> dict[str, object] | None:
-    try:
-        if status == PresenceStatus.SCAN_FAILED:
-            save_bluetooth_status(
-                config.db_path,
-                "scan_failed",
-                0,
-                0,
-                0,
-                None,
-                "",
-                [],
-                devices_output,
-                "BLE scan failed",
-                presence_status=PresenceStatus.SCAN_FAILED.name.lower(),
-                missing_threshold=config.missing_threshold,
-                min_rssi=config.min_rssi,
-            )
-            return None
-
-        details = collect_scan_details(bt, devices_output, allowed_macs)
-        presence = detect_allowed_presence_from_details(
-            details["devices"],  # type: ignore[arg-type]
-            config.min_rssi,
-        )
-        save_bluetooth_status(
-            config.db_path,
-            "ok",
-            int(details["total_devices"]),
-            int(details["connected_devices"]),
-            int(details["allowed_seen"]),
-            details["max_rssi"],  # type: ignore[arg-type]
-            str(details["strongest_device"]),
-            details["devices"],  # type: ignore[arg-type]
-            devices_output,
-            presence_status=presence.name.lower(),
-            missing_threshold=config.missing_threshold,
-            min_rssi=config.min_rssi,
-            allowed_present=presence == PresenceStatus.PRESENT,
-        )
-        return details
-    except Exception:
-        logging.exception("Could not save BLE status")
-        return None
-
-
-def save_scan_snapshot(
+def _save_ble_status(
     config: Config,
     status: PresenceStatus,
     devices_output: str,
     details: dict[str, object] | None,
-    state: State,
     presence: PresenceStatus,
+    missing_count: int = 0,
 ) -> None:
+    """Persist BLE scan result to the database (single row upsert)."""
     if status == PresenceStatus.SCAN_FAILED or details is None:
         save_bluetooth_status(
             config.db_path,
             "scan_failed",
-            0,
-            0,
-            0,
-            None,
-            "",
-            [],
+            0, 0, 0,
+            None, "", [],
             devices_output,
             "BLE scan failed",
             presence_status=PresenceStatus.SCAN_FAILED.name.lower(),
-            missing_count=state.missing_count,
+            missing_count=missing_count,
             missing_threshold=config.missing_threshold,
             min_rssi=config.min_rssi,
             allowed_present=False,
@@ -139,11 +84,47 @@ def save_scan_snapshot(
         details["devices"],  # type: ignore[arg-type]
         devices_output,
         presence_status=presence.name.lower(),
-        missing_count=state.missing_count,
+        missing_count=missing_count,
         missing_threshold=config.missing_threshold,
         min_rssi=config.min_rssi,
         allowed_present=presence == PresenceStatus.PRESENT,
     )
+
+
+def save_scan_status(
+    config: Config,
+    status: PresenceStatus,
+    devices_output: str,
+    allowed_macs: list[str],
+    bt: BluetoothCtlSession,
+) -> dict[str, object] | None:
+    """Used by cmd_scan_status: collect details then persist."""
+    try:
+        details: dict[str, object] | None = None
+        presence = PresenceStatus.SCAN_FAILED
+        if status != PresenceStatus.SCAN_FAILED:
+            details = collect_scan_details(bt, devices_output, allowed_macs)
+            presence = detect_allowed_presence_from_details(
+                details["devices"],  # type: ignore[arg-type]
+                config.min_rssi,
+            )
+        _save_ble_status(config, status, devices_output, details, presence)
+        return details
+    except Exception:
+        logging.exception("Could not save BLE status")
+        return None
+
+
+def save_scan_snapshot(
+    config: Config,
+    status: PresenceStatus,
+    devices_output: str,
+    details: dict[str, object] | None,
+    state: State,
+    presence: PresenceStatus,
+) -> None:
+    """Used by the main loop: details already collected, persist with state."""
+    _save_ble_status(config, status, devices_output, details, presence, missing_count=state.missing_count)
 
 
 def save_wifi_snapshot(

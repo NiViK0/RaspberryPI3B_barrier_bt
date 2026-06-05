@@ -81,6 +81,6 @@ def load_config() -> Config:
         wifi_auto_open=_env_bool("BARRIER_WIFI_AUTO_OPEN", False),
         wifi_interface=os.getenv("BARRIER_WIFI_INTERFACE", "wlan0"),
         wifi_min_signal=_env_optional_int("BARRIER_WIFI_MIN_SIGNAL"),
-        wifi_max_inactive_ms=_env_int("BARRIER_WIFI_MAX_INACTIVE_MS", 60000),
+        wifi_max_inactive_ms=_env_optional_int("BARRIER_WIFI_MAX_INACTIVE_MS") if os.getenv("BARRIER_WIFI_MAX_INACTIVE_MS") is not None else 60000,
         wifi_leases_path=os.getenv("BARRIER_WIFI_LEASES_PATH", "/var/lib/misc/dnsmasq.leases"),
     )

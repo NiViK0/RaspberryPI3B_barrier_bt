@@ -1,5 +1,5 @@
 import os
-import shutil
+import re
 import sqlite3
 import json
 from contextlib import closing
@@ -137,6 +137,9 @@ def init_db(db_path: str) -> None:
 
 
 def ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+    _IDENT_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
+    if not _IDENT_RE.match(table) or not _IDENT_RE.match(column):
+        raise ValueError(f"Invalid SQL identifier: table={table!r}, column={column!r}")
     columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
     if column not in columns:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
@@ -427,28 +430,28 @@ def latest_bluetooth_status(db_path: str) -> dict[str, object] | None:
     if row is None:
         return None
 
-    devices_json = row[8] or "[]"
+    row = BluetoothStatusRow(*row)
     try:
-        devices = json.loads(devices_json)
+        devices = json.loads(row.devices_json or "[]")
     except json.JSONDecodeError:
         devices = []
 
     return {
-        "updated_at": row[1],
-        "status": row[2],
-        "total_devices": row[3],
-        "connected_devices": row[4],
-        "allowed_seen": row[5],
-        "max_rssi": row[6],
-        "strongest_device": row[7],
+        "updated_at": row.updated_at,
+        "status": row.status,
+        "total_devices": row.total_devices,
+        "connected_devices": row.connected_devices,
+        "allowed_seen": row.allowed_seen,
+        "max_rssi": row.max_rssi,
+        "strongest_device": row.strongest_device,
         "devices": devices,
-        "raw_output": row[9],
-        "error": row[10],
-        "presence_status": row[11],
-        "missing_count": row[12],
-        "missing_threshold": row[13],
-        "min_rssi": row[14],
-        "allowed_present": bool(row[15]),
+        "raw_output": row.raw_output,
+        "error": row.error,
+        "presence_status": row.presence_status,
+        "missing_count": row.missing_count,
+        "missing_threshold": row.missing_threshold,
+        "min_rssi": row.min_rssi,
+        "allowed_present": bool(row.allowed_present),
     }
 
 
@@ -535,29 +538,29 @@ def latest_wifi_status(db_path: str) -> dict[str, object] | None:
     if row is None:
         return None
 
-    stations_json = row[8] or "[]"
+    row = WifiStatusRow(*row)
     try:
-        stations = json.loads(stations_json)
+        stations = json.loads(row.stations_json or "[]")
     except json.JSONDecodeError:
         stations = []
 
     return {
-        "updated_at": row[1],
-        "status": row[2],
-        "interface": row[3],
-        "connected_devices": row[4],
-        "allowed_seen": row[5],
-        "max_signal": row[6],
-        "strongest_station": row[7],
+        "updated_at": row.updated_at,
+        "status": row.status,
+        "interface": row.interface,
+        "connected_devices": row.connected_devices,
+        "allowed_seen": row.allowed_seen,
+        "max_signal": row.max_signal,
+        "strongest_station": row.strongest_station,
         "stations": stations,
-        "raw_output": row[9],
-        "error": row[10],
-        "presence_status": row[11],
-        "missing_count": row[12],
-        "missing_threshold": row[13],
-        "min_signal": row[14],
-        "max_inactive_ms": row[15],
-        "allowed_present": bool(row[16]),
+        "raw_output": row.raw_output,
+        "error": row.error,
+        "presence_status": row.presence_status,
+        "missing_count": row.missing_count,
+        "missing_threshold": row.missing_threshold,
+        "min_signal": row.min_signal,
+        "max_inactive_ms": row.max_inactive_ms,
+        "allowed_present": bool(row.allowed_present),
     }
 
 
@@ -568,5 +571,7 @@ def backup_db(db_path: str, backup_dir: str) -> str:
     os.makedirs(backup_dir, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     backup_path = os.path.join(backup_dir, f"barrier-{stamp}.db")
-    shutil.copy2(db_path, backup_path)
+    with closing(sqlite3.connect(db_path)) as src, \
+         closing(sqlite3.connect(backup_path)) as dst:
+        src.backup(dst)
     return backup_path

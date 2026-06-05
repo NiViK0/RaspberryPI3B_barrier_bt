@@ -7,7 +7,7 @@ import time
 from barrier_bluetooth import apply_device_info, detect_allowed_presence_from_details, parse_devices_output
 from barrier_config import Config
 from barrier_db import add_device, get_enabled_device_map, init_db, latest_bluetooth_status, latest_wifi_status, list_devices_detailed, log_event, log_open_event, normalize_mac, recent_events, recent_open_events, save_bluetooth_status, save_wifi_status
-from barrier_presence import detect_any_target_presence, process_presence, validate_mac
+from barrier_presence import process_presence, validate_mac
 from barrier_service import select_trigger_context
 from barrier_types import PresenceStatus, State
 from barrier_wifi import detect_allowed_wifi_presence, parse_iw_station_dump
@@ -58,11 +58,6 @@ class PresenceTests(unittest.TestCase):
         self.assertEqual(normalize_mac(" aa:bb:cc:dd:ee:ff "), "AA:BB:CC:DD:EE:FF")
         self.assertTrue(validate_mac("aa:bb:cc:dd:ee:ff"))
         self.assertFalse(validate_mac("aa:bb:cc"))
-
-    def test_detect_any_target_presence(self) -> None:
-        output = "Device AA:BB:CC:DD:EE:FF Phone"
-        status = detect_any_target_presence(output, ["aa:bb:cc:dd:ee:ff"])
-        self.assertEqual(status, PresenceStatus.PRESENT)
 
     def test_process_presence_opens_once_and_clears_presence_after_threshold(self) -> None:
         config = make_config()
