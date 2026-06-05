@@ -644,6 +644,20 @@ curl -I http://127.0.0.1:8080/
 
 Режим рассчитан на сценарий: телефон заранее знает Wi-Fi сеть платы, подъезжает к шлагбауму, автоматически подключается к точке доступа, сервис видит разрешенный Wi-Fi MAC и отправляет импульс открытия.
 
+Wi-Fi и BLE можно держать включенными одновременно. В таком режиме Wi-Fi обычно срабатывает раньше, потому что зона покрытия больше: как только разрешенный телефон подключился к точке доступа платы, сервис открывает шлагбаум. Если Wi-Fi еще не поймал телефон, но BLE уже видит разрешенный MAC, BLE тоже может открыть. Оба источника используют общий `BARRIER_COOLDOWN`, поэтому один подъезд не должен давать серию импульсов.
+
+Текущая рабочая схема для платы:
+
+```text
+Wi-Fi AP SSID: Barrier-Gate
+Wi-Fi AP interface: wlan1
+Board Wi-Fi IP: 10.42.1.1
+Web panel from AP: http://10.42.1.1:8080
+Ethernet/service IP: 10.14.0.117
+```
+
+Для ручного открытия через Wi-Fi подключите телефон к `Barrier-Gate`, откройте `http://10.42.1.1:8080`, войдите в web-панель и нажмите `Открыть вручную`.
+
 Порядок настройки:
 
 1. Настройте точку доступа Wi-Fi и подключите к ней телефон.
@@ -653,10 +667,16 @@ curl -I http://127.0.0.1:8080/
 sudo iw dev wlan0 station dump
 ```
 
+Если точка доступа работает на внешнем Wi-Fi-адаптере, как в текущей схеме, используйте `wlan1`:
+
+```bash
+sudo iw dev wlan1 station dump
+```
+
 В выводе нужна строка вида:
 
 ```text
-Station AA:BB:CC:DD:EE:FF (on wlan0)
+Station AA:BB:CC:DD:EE:FF (on wlan1)
 ```
 
 3. Добавьте этот Wi-Fi MAC в разрешенный список:
@@ -674,10 +694,12 @@ sudo systemctl edit barrier.service
 ```ini
 [Service]
 Environment=BARRIER_WIFI_AUTO_OPEN=true
-Environment=BARRIER_WIFI_INTERFACE=wlan0
-Environment=BARRIER_WIFI_MIN_SIGNAL=-75
+Environment=BARRIER_WIFI_INTERFACE=wlan1
+Environment=BARRIER_WIFI_MIN_SIGNAL=-85
 Environment=BARRIER_WIFI_MAX_INACTIVE_MS=60000
 ```
+
+`BARRIER_WIFI_MIN_SIGNAL=-85` дает более дальнюю зону срабатывания. Если нужно открывать только совсем рядом с платой, поднимите порог, например до `-75`.
 
 Если хотите режим только через Wi-Fi, без BLE:
 
@@ -685,8 +707,10 @@ Environment=BARRIER_WIFI_MAX_INACTIVE_MS=60000
 [Service]
 Environment=BARRIER_BLUETOOTH_ENABLED=false
 Environment=BARRIER_WIFI_AUTO_OPEN=true
-Environment=BARRIER_WIFI_INTERFACE=wlan0
+Environment=BARRIER_WIFI_INTERFACE=wlan1
 ```
+
+Для обычного режима с приоритетным Wi-Fi и резервным BLE не задавайте `BARRIER_BLUETOOTH_ENABLED=false`: BLE останется включенным по умолчанию.
 
 5. Чтобы web-панель тоже показывала, что Wi-Fi-автооткрытие включено, добавьте те же Wi-Fi-переменные в `barrier-panel.service`:
 
@@ -708,12 +732,32 @@ sudo systemctl restart barrier.service barrier-panel.service
 journalctl -u barrier.service -n 80 --no-pager
 ```
 
+Проверить текущие источники и пороги:
+
+```bash
+systemctl show barrier.service -p Environment --no-pager
+systemctl show barrier-panel.service -p Environment --no-pager
+```
+
 В web-панели появится блок `Wi-Fi диагностика`: подключенные станции, MAC, сигнал, неактивность, IP/hostname и флаги `allowed`/`active`.
 
 Важно про телефоны: iOS и Android часто используют приватный MAC для каждой Wi-Fi сети. Обычно он стабилен для конкретной SSID, поэтому добавлять нужно именно MAC из `iw station dump`, когда телефон подключен к сети шлагбаума. Если пользователь сбросит настройки сети или отключит/включит приватный адрес, MAC может измениться.
 
+Чтобы телефон открывал автоматически, его Wi-Fi MAC для сети `Barrier-Gate` должен быть в разрешенном списке:
+
+```bash
+/opt/barrier/venv/bin/python /opt/barrier/src/barrier_service.py list
+```
+
+Если телефона нет в списке или MAC отличается от `iw dev wlan1 station dump`, добавьте актуальный MAC:
+
+```bash
+/opt/barrier/venv/bin/python /opt/barrier/src/barrier_service.py add AA:BB:CC:DD:EE:FF "Phone Wi-Fi"
+```
+
 Практичные стартовые пороги:
 
+- `BARRIER_WIFI_MIN_SIGNAL=-85` для более дальней зоны Wi-Fi-автооткрытия;
 - `BARRIER_WIFI_MIN_SIGNAL=-75` для открытия только рядом с платой;
 - `BARRIER_WIFI_MAX_INACTIVE_MS=60000`, чтобы не считать давно молчащие станции активными;
 - `BARRIER_COOLDOWN=15` или больше, чтобы один подъезд не давал серию импульсов.
